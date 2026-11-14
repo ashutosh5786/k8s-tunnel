@@ -111,6 +111,7 @@ func TestSessionIDsAreValidAndUnique(t *testing.T) {
 }
 
 func TestCommandLineErrors(t *testing.T) {
+	isolate(t)
 	for name, tc := range map[string]struct {
 		args []string
 		want string
@@ -198,6 +199,7 @@ func ask(addr, msg string) (string, error) {
 // TestConnectCommandEndToEnd drives the real command line against a real
 // server in direct mode, covering both traffic directions.
 func TestConnectCommandEndToEnd(t *testing.T) {
+	isolate(t)
 	serverLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

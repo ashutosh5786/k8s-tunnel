@@ -35,6 +35,7 @@ func readFile(t *testing.T, path string) string {
 // server and checks that a cluster Service name ends up in the hosts file
 // pointing at an address that reaches that Service through the tunnel.
 func TestHostsModeEndToEnd(t *testing.T) {
+	isolate(t)
 	if ln, err := net.Listen("tcp", "127.77.0.1:0"); err != nil {
 		t.Skipf("this machine cannot bind addresses in 127.0.0.0/8 other than 127.0.0.1: %v", err)
 	} else {
@@ -147,6 +148,7 @@ func TestHostsModeEndToEnd(t *testing.T) {
 }
 
 func TestHostsModeFailsEarlyWhenHostsFileCannotBeChanged(t *testing.T) {
+	isolate(t)
 	missing := filepath.Join(t.TempDir(), "no-such-dir", "hosts")
 	var stdout, stderr bytes.Buffer
 	// The server address is unreachable on purpose: the command must give

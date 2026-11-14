@@ -30,11 +30,16 @@ spec:
       containers:
         - name: color-api
           image: ashutosh5786/color-api:red
+          # The image answers with whatever BG_COLOR says and defaults
+          # to blue, whichever tag is used.
+          env:
+            - name: BG_COLOR
+              value: red
           ports:
             - name: http
               containerPort: 8080
           readinessProbe:
-            tcpSocket: {port: http}
+            httpGet: {path: /health, port: http}
             periodSeconds: 5
 ---
 apiVersion: v1

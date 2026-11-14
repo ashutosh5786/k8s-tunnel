@@ -4,7 +4,7 @@ A two-service application for trying the tunnel: a web frontend that asks a `col
 
 | In the cluster | Calls | Purpose |
 |---|---|---|
-| `frontend` | `color-api` (the `red` image, in the cluster) | The application as it normally runs |
+| `frontend` | `color-api` (in the cluster, set to red) | The application as it normally runs |
 | `frontend-preview` | `color-api-dev` in the tunnel namespace, which is your laptop | Stands in for a routing-key rule in a service mesh |
 
 The idea: the cluster keeps running red. You run the blue version on your laptop. The normal frontend stays red; the preview frontend shows blue, served from your machine.
@@ -26,8 +26,10 @@ Wait until `color-api`, `frontend` and `frontend-preview` are all `1/1 Running`.
 ## 2. Run the blue version on your laptop
 
 ```powershell
-docker run --rm -p 8081:8080 ashutosh5786/color-api:blue
+docker run --rm -p 8081:8080 -e BG_COLOR=blue ashutosh5786/color-api:blue
 ```
+
+The colour comes from `BG_COLOR`, not from the image tag; both tags are the same image and default to blue. Try `-e BG_COLOR=green` to make the point that it is your own version.
 
 Leave it running. It is your "local service B", listening on `localhost:8081`.
 

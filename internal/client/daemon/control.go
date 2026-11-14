@@ -108,7 +108,7 @@ func Call(addr, token, command string, args []string, timeout time.Duration) (st
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(timeout))
 	if err := json.NewEncoder(conn).Encode(controlRequest{Token: token, Command: command, Args: args}); err != nil {
-		return "", err
+		return "", fmt.Errorf("no answer from the background connection: %w", err)
 	}
 	var resp controlResponse
 	dec := json.NewDecoder(bufio.NewReader(conn))

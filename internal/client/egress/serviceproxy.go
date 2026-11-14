@@ -263,6 +263,7 @@ func (p *ServiceProxy) Run(ctx context.Context, cfg RunConfig) {
 
 	shown := -1
 	synced := false
+	attempts := 0
 	for {
 		lctx, cancel := context.WithTimeout(ctx, time.Minute)
 		services, err := cfg.List(lctx)
@@ -286,9 +287,15 @@ func (p *ServiceProxy) Run(ctx context.Context, cfg RunConfig) {
 		}
 		wait := cfg.Interval
 		if !synced {
-			// Until the first success, retry quickly: the tunnel is
-			// probably still connecting.
+			// Until the first success the tunnel is probably still
+			// connecting, so look again very soon: names should work
+			// the moment "connect" reports success. If it keeps failing
+			// (discovery may be off on the server), slow down.
+			attempts++
 			wait = min(wait, 2*time.Second)
+			if attempts <= 40 {
+				wait = min(wait, 250*time.Millisecond)
+			}
 		}
 		select {
 		case <-ctx.Done():

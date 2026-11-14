@@ -354,6 +354,13 @@ func connectInBackground(ctx context.Context, o *connectOpts, args []string, std
 	if err != nil {
 		return err
 	}
+	// Catch wrong flags and a bad kubeconfig here, where the user sees
+	// them, rather than in the background process's log. This comes
+	// first so a typing mistake is reported as such even when connected.
+	checked, err := buildConfig(o, io.Discard, io.Discard, io.Discard)
+	if err != nil {
+		return err
+	}
 	if s, running := dir.Running(); running {
 		where := ""
 		if s.Context != "" {
@@ -361,11 +368,9 @@ func connectInBackground(ctx context.Context, o *connectOpts, args []string, std
 		}
 		return fmt.Errorf("already connected%s (process %d); run \"ashctl disconnect\" first", where, s.PID)
 	}
-	// Catch wrong flags and a bad kubeconfig here, where the user sees
-	// them, rather than in the background process's log.
-	if _, err := buildConfig(o, io.Discard, io.Discard, io.Discard); err != nil {
-		return err
-	}
+	// With name resolution on, "connected" is not the whole story: wait
+	// for the names too, so they work as soon as this command returns.
+	awaitNames := checked.Hosts != nil && o.server == ""
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -426,13 +431,19 @@ func connectInBackground(ctx context.Context, o *connectOpts, args []string, std
 	}
 	// Give the lines that follow the connection (exposures, names) a
 	// moment to arrive: stop once the output has been quiet for a second.
-	quiet, giveUp := time.Now(), time.Now().Add(5*time.Second)
-	for time.Since(quiet) < time.Second && time.Now().Before(giveUp) {
+	quiet, giveUp := time.Now(), time.Now().Add(8*time.Second)
+	for time.Now().Before(giveUp) {
 		before := shown
 		time.Sleep(200 * time.Millisecond)
-		relay()
+		body := relay()
 		if shown != before {
 			quiet = time.Now()
+		}
+		if awaitNames && !strings.Contains(body, "resolving ") {
+			continue
+		}
+		if time.Since(quiet) >= time.Second {
+			break
 		}
 	}
 	fmt.Fprintf(stdout, "\nRunning in the background (process %d). Use \"ashctl status\" and \"ashctl disconnect\".\n", cmd.Process.Pid)
