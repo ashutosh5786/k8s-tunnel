@@ -1,0 +1,9 @@
+.git
+.gitignore
+.gitattributes
+.claude
+bin
+dist
+deploy
+*.md
+Makefile

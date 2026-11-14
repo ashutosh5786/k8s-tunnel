@@ -1,0 +1,67 @@
+{{- if .Values.rbac.create }}
+# The server manages one Service per exposed local service, in its own
+# namespace only. It needs nothing cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "k8s-tunnel.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "k8s-tunnel.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "k8s-tunnel.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "k8s-tunnel.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.users.createRole }}
+---
+# What a person needs to use the tunnel: find the server pods and
+# port-forward to them. "get" on portforward is needed for WebSocket
+# port-forwarding, "create" for the older SPDY protocol.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "k8s-tunnel.fullname" . }}-user
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["get", "create"]
+{{- with .Values.users.subjects }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "k8s-tunnel.fullname" $ }}-user
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "k8s-tunnel.fullname" $ }}-user
+subjects:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}

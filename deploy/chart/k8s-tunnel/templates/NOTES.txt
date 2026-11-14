@@ -1,0 +1,17 @@
+k8s-tunnel server is installed in namespace "{{ .Release.Namespace }}".
+
+Connect from a developer machine:
+
+  tunnel connect --namespace {{ .Release.Namespace }} --selector app.kubernetes.io/name={{ include "k8s-tunnel.name" . }}{{ if ne (int .Values.server.port) 7000 }} --port {{ .Values.server.port }}{{ end }} \
+    --expose my-service:8080:3000/http \
+    --forward 5432:postgres.db.svc:5432
+
+Each exposure becomes a Service in this namespace, for example:
+
+  my-service.{{ .Release.Namespace }}.svc:8080
+
+{{- if and .Values.users.createRole (not .Values.users.subjects) }}
+
+No users are bound yet. People need the "{{ include "k8s-tunnel.fullname" . }}-user" Role
+to connect. Set users.subjects, or create a RoleBinding to that Role yourself.
+{{- end }}

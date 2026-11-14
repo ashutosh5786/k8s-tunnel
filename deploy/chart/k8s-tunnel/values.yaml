@@ -1,0 +1,85 @@
+# Number of tunnel-server pods. Each holds a share of the connected users;
+# adding replicas adds capacity. Scaling down disconnects the users on the
+# removed pods, who then reconnect to another one.
+replicaCount: 1
+
+image:
+  # Where you pushed the image built from the Dockerfile. Required.
+  repository: ""
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+server:
+  # Port clients reach through a port-forward. Must match the client's
+  # --port flag (default 7000).
+  port: 7000
+  # Ports opened for exposed local services, one per exposed port. The
+  # size of the range caps how many can be exposed on one pod at a time.
+  portRange: "20000-29999"
+  # How long an exposure's Service is kept after its client disconnects,
+  # so a brief network drop does not remove it.
+  grace: 30s
+  debug: false
+
+serviceAccount:
+  create: true
+  # Defaults to the release's full name.
+  name: ""
+  annotations: {}
+
+rbac:
+  # Role that lets the server manage the per-exposure Services in its own
+  # namespace. Without it the server cannot publish exposures.
+  create: true
+
+# Access for the people who use the tunnel. Being allowed to port-forward
+# to the server pods is what grants use of the tunnel.
+users:
+  # Create a Role named "<fullname>-user" with exactly the access a client
+  # needs: list the server pods and port-forward to them.
+  createRole: true
+  # Who gets that Role. Standard RBAC subjects, for example:
+  #   - kind: Group
+  #     name: developers
+  #     apiGroup: rbac.authorization.k8s.io
+  #   - kind: User
+  #     name: ash@example.com
+  #     apiGroup: rbac.authorization.k8s.io
+  subjects: []
+
+# Extra labels for the server pods. To enrol the pods in Istio ambient
+# mode without labelling the whole namespace, set:
+#   istio.io/dataplane-mode: ambient
+podLabels: {}
+podAnnotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# Keeps at least this many pods up during voluntary disruptions such as
+# node drains. Only applied when replicaCount is greater than 1.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Seconds a pod gets to remove its Services before it is killed.
+terminationGracePeriodSeconds: 30
+
+# For example, to run on Graviton nodes only:
+#   nodeSelector:
+#     kubernetes.io/arch: arm64
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""

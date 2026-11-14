@@ -1,0 +1,6 @@
+apiVersion: v2
+name: k8s-tunnel
+description: Shared tunnel server that connects developer machines to the cluster network.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

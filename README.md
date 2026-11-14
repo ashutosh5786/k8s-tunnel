@@ -2,27 +2,114 @@
 
 Run one service on your laptop as if it were inside the cluster.
 
-- **Inbound:** requests carrying a routing-key header are routed (Istio ambient) to the in-cluster tunnel server, which relays them to the local service.
-- **Outbound:** the local service calls cluster FQDNs unmodified; the traffic is sent through the tunnel and dialled from inside the cluster.
+- **Inbound:** each exposed local port gets a Service in the cluster that points at the tunnel server, which relays connections to the local service. Routing to that Service (for example by a routing-key header in Istio) is up to the mesh.
+- **Outbound:** connections from the laptop are sent through the tunnel and dialled from inside the cluster.
 
-Works with any cluster reachable through your kubeconfig (EKS, AKS, GKE).
+One shared server serves all users and can run as several replicas. Works with any cluster reachable through your kubeconfig (EKS, AKS, GKE).
+
+## Status
+
+Working: the tunnel server, the client library, and a `tunnel connect` command with explicit forwards.
+
+Not built yet: resolving cluster FQDNs on the laptop without per-address forwards, saved profiles, background mode, and the terminal dashboard.
+
+## Usage
+
+```bash
+tunnel connect --expose b-ash:8080:3000/http --forward 5432:postgres.db.svc:5432
+```
+
+That does two things until you press Ctrl-C:
+
+- Creates the Service `b-ash` in the tunnel namespace. Anything in the cluster that connects to `b-ash.k8s-tunnel.svc:8080` reaches `localhost:3000` on your machine.
+- Listens on `localhost:5432` and sends those connections to `postgres.db.svc:5432` from inside the cluster.
+
+It reconnects by itself if the connection drops, and removes its Services when it exits.
+
+| Flag | Meaning |
+|---|---|
+| `--expose NAME:PORT[:LOCALPORT][/PROTOCOL]` | Expose a local port. Repeat it for more ports; specs with the same name become one multi-port Service. The protocol (`http`, `grpc`, ...) is set as the Service port's `appProtocol`, which the mesh needs for header-based routing. |
+| `--forward LOCALPORT:HOST:PORT` | Reach a cluster address on a local port. Repeatable. Listens on loopback only. |
+| `--context`, `--kubeconfig` | Which cluster to use. Defaults to your current kubectl context. |
+| `--namespace` | Namespace the tunnel server runs in. Default `k8s-tunnel`. |
+| `--selector` | Label selector for the server pods. Default `app.kubernetes.io/name=k8s-tunnel`. |
+| `--port` | Server port inside the pod. Default 7000. |
+| `--user` | Name recorded on your Services. Defaults to your OS user name. |
+| `--session` | Session id. Reuse one to reclaim your Services after restarting the client. |
+| `--server HOST:PORT` | Connect straight to a server, skipping the cluster. For local testing. |
+
+## Try it without a cluster
+
+Start the server with Service publishing turned off:
+
+```bash
+./bin/tunnel-server -publish=false -listen 127.0.0.1:7000
+```
+
+In another terminal, connect to it directly:
+
+```bash
+./bin/tunnel connect --server 127.0.0.1:7000 --expose b-ash:8080:3000 --forward 8081:example.com:80
+```
+
+The client prints the server port chosen for the exposure. Connecting to that port on localhost reaches `localhost:3000`, which is what a Service would do in a cluster.
+
+## Deploy the server
+
+Build and push the image. This builds for both x86-64 and arm64 (Graviton) nodes:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t REGISTRY/k8s-tunnel-server:0.1.0 --push .
+```
+
+Install the chart:
+
+```bash
+helm install k8s-tunnel deploy/chart/k8s-tunnel --namespace k8s-tunnel --create-namespace --set image.repository=REGISTRY/k8s-tunnel-server --set image.tag=0.1.0
+```
+
+See `deploy/chart/k8s-tunnel/values.yaml` for replicas, the port range, who may use the tunnel, and Istio ambient enrolment.
+
+### Permissions
+
+| Who | Access | Scope |
+|---|---|---|
+| The server | Full access to `services` | Its own namespace only |
+| People using the tunnel | `get`/`list` on `pods`, `get`/`create` on `pods/portforward` | The tunnel namespace only |
+
+Nothing cluster-wide is needed. The chart creates a `<release>-user` Role for people; bind it with `users.subjects` or your own RoleBinding. Being able to port-forward to the server pods is what grants use of the tunnel.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `cmd/tunnel` | Client binary: CLI and TUI, runs on the laptop |
-| `cmd/tunnel-server` | In-cluster server, runs as a scalable Deployment |
+| `cmd/tunnel` | Client command, runs on the laptop |
+| `cmd/tunnel-server` | In-cluster server, runs as a StatefulSet |
 | `pkg/tunnel` | Public Go API for embedding the tunnel in other projects |
 | `internal/protocol` | Wire protocol and stream multiplexing shared by client and server |
-| `internal/kube` | Kubeconfig loading, port-forward transport, Service discovery |
-| `internal/client/egress` | Loopback listeners that send local traffic into the cluster |
-| `internal/client/hosts` | Hosts-file entries for cluster FQDNs |
-| `internal/client/daemon` | Background mode, profiles, reconnect |
-| `internal/server/ingress` | Receives routed requests and dispatches them by routing key |
-| `internal/server/registry` | Tracks connected client tunnels |
-| `internal/tui` | Terminal dashboard |
-| `deploy` | Kubernetes and Istio manifests for the server |
+| `internal/kube` | Kubeconfig loading, server pod selection, port-forward transport |
+| `internal/client/connect` | Keeps a session alive: connect, expose, forward, reconnect |
+| `internal/client/egress` | Local listeners that send connections into the cluster |
+| `internal/client/hosts` | Hosts-file entries for cluster FQDNs (not built yet) |
+| `internal/client/daemon` | Background mode and profiles (not built yet) |
+| `internal/server` | Shared tunnel server: sessions, cluster dials, listeners for exposed ports |
+| `internal/server/kubepub` | Publishes each exposure as a Service that selects the owning replica |
+| `internal/tui` | Terminal dashboard (not built yet) |
+| `deploy/chart/k8s-tunnel` | Helm chart for the server |
+
+## Test
+
+The tests need no cluster. They run the real server and client against each other on localhost and use a fake Kubernetes API for the Service logic.
+
+```bash
+go test ./...
+```
+
+Run them repeatedly to look for flaky behaviour:
+
+```bash
+go test -count=20 ./...
+```
 
 ## Build
 
