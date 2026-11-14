@@ -23,6 +23,10 @@ type State struct {
 	Context string    `json:"context,omitempty"`
 	Session string    `json:"session"`
 	Started time.Time `json:"started"`
+	// Control is the address of the control channel, and Token the secret
+	// that requests to it must carry. Empty when there is none.
+	Control string `json:"control,omitempty"`
+	Token   string `json:"token,omitempty"`
 }
 
 // Dir is the directory holding the background process's files.

@@ -32,7 +32,9 @@ const usage = `ashctl connects your machine to a Kubernetes cluster.
 
 Usage:
   ashctl connect [--context NAME]   connect and keep running in the background
-  ashctl status                     show whether you are connected
+  ashctl expose NAME:PORT[:LOCAL]   make a local port reachable in the cluster
+  ashctl unexpose NAME              stop exposing it
+  ashctl status                     show whether you are connected, and what is exposed
   ashctl disconnect                 stop the background connection
   ashctl logs                       show the background connection's output
   ashctl cleanup                    remove hosts-file entries left by a crash
@@ -42,8 +44,10 @@ Examples:
   # Service name then works on this machine.
   ashctl connect --context dev
 
-  # Also make localhost:3000 reachable in the cluster as Service "b-ash".
-  ashctl connect --context dev --expose b-ash:8080:3000/http
+  # While connected, make localhost:3000 reachable in the cluster as
+  # Service "b-ash" on port 8080, and later take it away again.
+  ashctl expose b-ash:8080:3000/http
+  ashctl unexpose b-ash
 
 Run "ashctl connect -h" for all flags.
 `
@@ -65,6 +69,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "connect":
 		return runConnect(ctx, args[1:], stdout, stderr)
+	case "expose":
+		return runExpose(args[1:], stdout)
+	case "unexpose":
+		return runUnexpose(args[1:], stdout)
 	case "status":
 		return runStatus(args[1:], stdout)
 	case "disconnect":
@@ -224,20 +232,115 @@ func runConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
+	sess := connect.New(cfg)
 	if o.daemonChild {
 		dir, err := daemon.DefaultDir()
 		if err != nil {
 			return err
 		}
-		if err := dir.Write(daemon.State{PID: os.Getpid(), Context: o.kubeContext, Session: o.session, Started: time.Now().UTC()}); err != nil {
+		// The control channel is how later commands such as "ashctl
+		// expose" reach this process.
+		ln, err := daemon.ListenControl()
+		if err != nil {
+			return err
+		}
+		token, err := daemon.NewToken()
+		if err != nil {
+			ln.Close()
+			return err
+		}
+		state := daemon.State{
+			PID: os.Getpid(), Context: o.kubeContext, Session: o.session, Started: time.Now().UTC(),
+			Control: ln.Addr().String(), Token: token,
+		}
+		if err := dir.Write(state); err != nil {
+			ln.Close()
 			return err
 		}
 		defer dir.Clear()
 		var cancel context.CancelFunc
 		ctx, cancel = dir.WatchStop(ctx)
 		defer cancel()
+		go daemon.ServeControl(ctx, ln, token, controlHandler(sess))
 	}
-	return connect.Run(ctx, cfg)
+	return sess.Run(ctx)
+}
+
+// controlHandler carries out commands sent to the background process.
+func controlHandler(sess *connect.Session) daemon.Handler {
+	return func(ctx context.Context, command string, args []string) (string, error) {
+		var out strings.Builder
+		switch command {
+		case "expose":
+			exposures, err := parseExposes(args)
+			if err != nil {
+				return "", err
+			}
+			for _, e := range exposures {
+				exp, err := sess.Expose(ctx, e)
+				if err != nil {
+					return out.String(), fmt.Errorf("expose %s: %w", e.Name, err)
+				}
+				for _, line := range connect.Describe(exp) {
+					fmt.Fprintf(&out, "exposed   %s\n", line)
+				}
+			}
+		case "unexpose":
+			for _, name := range args {
+				if err := sess.Unexpose(ctx, name); err != nil {
+					return out.String(), err
+				}
+				fmt.Fprintf(&out, "unexposed %s\n", name)
+			}
+		case "list":
+			for _, exp := range sess.Exposures() {
+				for _, line := range connect.Describe(exp) {
+					fmt.Fprintf(&out, "  %s\n", line)
+				}
+			}
+		default:
+			return "", fmt.Errorf("unknown command %q", command)
+		}
+		return out.String(), nil
+	}
+}
+
+// runControl sends a command to the background connection and prints
+// what it answers.
+func runControl(command string, args []string, stdout io.Writer) error {
+	dir, err := daemon.DefaultDir()
+	if err != nil {
+		return err
+	}
+	s, running := dir.Running()
+	if !running {
+		return errors.New("not connected: run \"ashctl connect\" first")
+	}
+	if s.Control == "" {
+		return errors.New("the running connection was started by an older ashctl: disconnect and connect again")
+	}
+	out, err := daemon.Call(s.Control, s.Token, command, args, time.Minute)
+	io.WriteString(stdout, out)
+	return err
+}
+
+func runExpose(args []string, stdout io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: ashctl expose NAME:PORT[:LOCALPORT][/PROTOCOL] ...   e.g. ashctl expose b-ash:8080:3000/http")
+	}
+	// Checked here as well, so a typing mistake is reported even when
+	// nothing is connected.
+	if _, err := parseExposes(args); err != nil {
+		return err
+	}
+	return runControl("expose", args, stdout)
+}
+
+func runUnexpose(args []string, stdout io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: ashctl unexpose NAME ...")
+	}
+	return runControl("unexpose", args, stdout)
 }
 
 // How long "ashctl connect" waits for the background process to report
@@ -362,8 +465,19 @@ func runStatus(args []string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "Connected to %s since %s (process %d, session %s).\n\n",
 		where, s.Started.Local().Format("15:04:05"), s.PID, s.Session)
+	if s.Control != "" {
+		if list, err := daemon.Call(s.Control, s.Token, "list", nil, 10*time.Second); err == nil {
+			if list == "" {
+				fmt.Fprintln(stdout, "Nothing exposed. Use \"ashctl expose NAME:PORT[:LOCALPORT]\".")
+			} else {
+				fmt.Fprintf(stdout, "Exposed:\n%s", list)
+			}
+			fmt.Fprintln(stdout)
+		}
+	}
 	if body, err := os.ReadFile(dir.LogPath()); err == nil {
-		stdout.Write(lastLines(body, 15))
+		fmt.Fprintln(stdout, "Recent activity:")
+		stdout.Write(lastLines(body, 10))
 	}
 	return nil
 }

@@ -70,13 +70,24 @@ type Config struct {
 	MinBackoff, MaxBackoff time.Duration
 }
 
-var errNotConnected = errors.New("tunnel is not connected")
+var errNotConnected = errors.New("not connected to the cluster right now")
 
-// Run holds the session open until ctx is cancelled, reconnecting as
-// needed. It returns an error only if the first connection fails or a
-// local forward cannot listen, since those usually mean a wrong setting
-// that retrying will not fix.
-func Run(ctx context.Context, cfg Config) error {
+// Session is one connection to the cluster. What it exposes can be changed
+// while it runs, and it puts everything back after a reconnect.
+type Session struct {
+	cfg     Config
+	current atomic.Pointer[tunnel.Client]
+
+	// mu serialises every change to what is exposed, including the
+	// re-exposing done after a reconnect, so the two cannot interleave.
+	mu     sync.Mutex
+	wanted map[string]Exposure         // what should be exposed, by name
+	order  []string                    // names in the order they were added
+	live   map[string]*tunnel.Exposure // what the server last reported
+}
+
+// New prepares a session. Call Run to connect.
+func New(cfg Config) *Session {
 	if cfg.Out == nil {
 		cfg.Out = io.Discard
 	}
@@ -89,12 +100,32 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.MaxBackoff == 0 {
 		cfg.MaxBackoff = 30 * time.Second
 	}
+	s := &Session{cfg: cfg, wanted: map[string]Exposure{}, live: map[string]*tunnel.Exposure{}}
+	for _, e := range cfg.Exposures {
+		if _, dup := s.wanted[e.Name]; !dup {
+			s.order = append(s.order, e.Name)
+		}
+		s.wanted[e.Name] = e
+	}
+	return s
+}
 
+// Run is New followed by Session.Run, for callers that never change the
+// session afterwards.
+func Run(ctx context.Context, cfg Config) error {
+	return New(cfg).Run(ctx)
+}
+
+// Run holds the session open until ctx is cancelled, reconnecting as
+// needed. It returns an error only if the first connection fails or a
+// local forward cannot listen, since those usually mean a wrong setting
+// that retrying will not fix.
+func (s *Session) Run(ctx context.Context) error {
+	cfg := s.cfg
 	// The forwards outlive individual connections and always use
-	// whichever session is current.
-	var current atomic.Pointer[tunnel.Client]
+	// whichever connection is current.
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
-		c := current.Load()
+		c := s.current.Load()
 		if c == nil {
 			return nil, errNotConnected
 		}
@@ -128,7 +159,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}()
 	if proxy != nil {
 		list := func(ctx context.Context) ([]egress.Service, error) {
-			c := current.Load()
+			c := s.current.Load()
 			if c == nil {
 				return nil, errNotConnected
 			}
@@ -137,8 +168,8 @@ func Run(ctx context.Context, cfg Config) error {
 				return nil, err
 			}
 			out := make([]egress.Service, len(services))
-			for i, s := range services {
-				out[i] = egress.Service{Namespace: s.Namespace, Name: s.Name, Ports: s.Ports}
+			for i, svc := range services {
+				out[i] = egress.Service{Namespace: svc.Namespace, Name: svc.Name, Ports: svc.Ports}
 			}
 			return out, nil
 		}
@@ -175,7 +206,7 @@ func Run(ctx context.Context, cfg Config) error {
 	backoff := cfg.MinBackoff
 	connectedOnce := false
 	for {
-		client, err := establish(ctx, cfg)
+		client, err := s.establish(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -187,14 +218,12 @@ func Run(ctx context.Context, cfg Config) error {
 		} else {
 			connectedOnce = true
 			backoff = cfg.MinBackoff
-			current.Store(client)
 			select {
 			case <-client.Done():
-				current.Store(nil)
+				s.current.CompareAndSwap(client, nil)
 				fmt.Fprintf(cfg.Out, "connection lost (reconnecting in %s)\n", backoff)
 			case <-ctx.Done():
-				current.Store(nil)
-				shutdown(client, cfg)
+				s.shutdown(client)
 				return nil
 			}
 		}
@@ -207,48 +236,156 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
-// establish opens one connection and sets up every exposure on it.
-func establish(ctx context.Context, cfg Config) (*tunnel.Client, error) {
-	conn, err := cfg.Transport(ctx)
+// establish opens one connection, exposes everything that is wanted on
+// it, and only then makes it the current connection.
+func (s *Session) establish(ctx context.Context) (*tunnel.Client, error) {
+	conn, err := s.cfg.Transport(ctx)
 	if err != nil {
 		return nil, err
 	}
-	client, err := tunnel.Connect(ctx, conn, tunnel.Options{User: cfg.User, Session: cfg.Session, Log: cfg.Log})
+	client, err := tunnel.Connect(ctx, conn, tunnel.Options{User: s.cfg.User, Session: s.cfg.Session, Log: s.cfg.Log})
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(cfg.Out, "connected to %s as %s (session %s)\n", orUnknown(client.Replica()), cfg.User, cfg.Session)
-	for _, e := range cfg.Exposures {
-		exp, err := client.Expose(ctx, e.Name, e.Ports)
+	fmt.Fprintf(s.cfg.Out, "connected to %s as %s (session %s)\n", orUnknown(client.Replica()), s.cfg.User, s.cfg.Session)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live := map[string]*tunnel.Exposure{}
+	for _, name := range s.order {
+		exp, err := client.Expose(ctx, name, s.wanted[name].Ports)
 		if err != nil {
 			client.Close()
-			return nil, fmt.Errorf("expose %s: %w", e.Name, err)
+			return nil, fmt.Errorf("expose %s: %w", name, err)
 		}
-		for _, p := range exp.Ports {
-			host := exp.Host
-			if host == "" {
-				host = "server port " + fmt.Sprint(p.ServerPort)
-			} else {
-				host = fmt.Sprintf("%s:%d", host, p.Port)
-			}
-			fmt.Fprintf(cfg.Out, "exposed   %s -> localhost:%d\n", host, p.LocalPort)
-		}
+		live[name] = exp
+		s.report(exp)
 	}
+	s.live = live
+	s.current.Store(client)
 	return client, nil
 }
 
+// report writes one status line per exposed port.
+func (s *Session) report(exp *tunnel.Exposure) {
+	for _, line := range Describe(exp) {
+		fmt.Fprintf(s.cfg.Out, "exposed   %s\n", line)
+	}
+}
+
+// Describe returns one line per port saying where the cluster reaches the
+// exposure and which local port it leads to.
+func Describe(exp *tunnel.Exposure) []string {
+	var out []string
+	for _, p := range exp.Ports {
+		var where string
+		switch {
+		case exp.Host != "":
+			where = fmt.Sprintf("%s:%d", exp.Host, p.Port)
+		case p.ServerPort != 0:
+			where = fmt.Sprintf("server port %d", p.ServerPort)
+		default:
+			where = fmt.Sprintf("%s:%d (waiting to reconnect)", exp.Name, p.Port)
+		}
+		out = append(out, fmt.Sprintf("%s -> localhost:%d", where, p.LocalPort))
+	}
+	return out
+}
+
+// Expose adds an exposure to the running session, or replaces the one
+// with the same name. It is kept across reconnects until Unexpose.
+func (s *Session) Expose(ctx context.Context, e Exposure) (*tunnel.Exposure, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	client := s.current.Load()
+	if client == nil {
+		return nil, errNotConnected
+	}
+	exp, err := client.Expose(ctx, e.Name, e.Ports)
+	if err != nil {
+		// Not remembered: a request the server refused must not be
+		// retried on every reconnect.
+		return nil, err
+	}
+	if _, known := s.wanted[e.Name]; !known {
+		s.order = append(s.order, e.Name)
+	}
+	s.wanted[e.Name] = e
+	s.live[e.Name] = exp
+	s.report(exp)
+	return exp, nil
+}
+
+// Unexpose removes an exposure from the running session.
+func (s *Session) Unexpose(ctx context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, known := s.wanted[name]; !known {
+		return fmt.Errorf("%q is not exposed", name)
+	}
+	// While disconnected there is nobody to tell; forgetting it is
+	// enough, because the server drops it when the grace period ends.
+	if client := s.current.Load(); client != nil {
+		if err := client.Unexpose(ctx, name); err != nil {
+			return err
+		}
+	}
+	delete(s.wanted, name)
+	delete(s.live, name)
+	for i, n := range s.order {
+		if n == name {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+	fmt.Fprintf(s.cfg.Out, "unexposed %s\n", name)
+	return nil
+}
+
+// Exposures returns what the session exposes, in the order it was added.
+func (s *Session) Exposures() []*tunnel.Exposure {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	connected := s.current.Load() != nil
+	out := make([]*tunnel.Exposure, 0, len(s.order))
+	for _, name := range s.order {
+		if exp := s.live[name]; exp != nil && connected {
+			out = append(out, exp)
+			continue
+		}
+		// Not on the server at the moment: describe what is wanted.
+		exp := &tunnel.Exposure{Name: name}
+		for _, p := range s.wanted[name].Ports {
+			local := p.LocalPort
+			if local == 0 {
+				local = p.Port
+			}
+			exp.Ports = append(exp.Ports, tunnel.ExposedPort{Name: p.Name, Port: p.Port, LocalPort: local})
+		}
+		out = append(out, exp)
+	}
+	return out
+}
+
+// Connected reports whether the session has a live connection right now.
+func (s *Session) Connected() bool { return s.current.Load() != nil }
+
 // shutdown removes the exposures right away, so the cluster stops sending
 // traffic instead of waiting out the server's grace period.
-func shutdown(client *tunnel.Client, cfg Config) {
+func (s *Session) shutdown(client *tunnel.Client) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	for _, e := range cfg.Exposures {
-		if err := client.Unexpose(ctx, e.Name); err != nil {
-			cfg.Log.Warn("unexpose failed", "exposure", e.Name, "err", err)
+	s.mu.Lock()
+	s.current.Store(nil)
+	names := append([]string(nil), s.order...)
+	s.mu.Unlock()
+	for _, name := range names {
+		if err := client.Unexpose(ctx, name); err != nil {
+			s.cfg.Log.Warn("unexpose failed", "exposure", name, "err", err)
 		}
 	}
 	client.Close()
-	fmt.Fprintln(cfg.Out, "disconnected")
+	fmt.Fprintln(s.cfg.Out, "disconnected")
 }
 
 func orUnknown(s string) string {

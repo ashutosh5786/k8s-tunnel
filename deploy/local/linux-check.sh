@@ -57,6 +57,25 @@ reply=$(nc -w 3 127.0.0.1 18003 </dev/null 2>/dev/null)
 echo "reply: $reply"
 check "forward works after connect returned" test "$reply" = "hello from the cluster side"
 
+step "expose on the running connection"
+# A stand-in "local service" for the cluster to reach.
+( while true; do echo "hello from the laptop side" | nc -l -p 18002 >/dev/null 2>&1 || sleep 1; done ) &
+sleep 1
+./ashctl expose b-ash:8080:18002/http | tee /tmp/expose.out
+port=$(sed -n 's/.*server port \([0-9]*\) .*/\1/p' /tmp/expose.out | head -1)
+check "expose printed where the cluster reaches it" test -n "$port"
+reply=$(nc -w 3 127.0.0.1 "$port" </dev/null 2>/dev/null)
+echo "reply: $reply"
+check "cluster-side port reaches the local service" test "$reply" = "hello from the laptop side"
+./ashctl status
+check "status lists the exposure" sh -c './ashctl status | grep -q "localhost:18002"'
+
+step "unexpose"
+./ashctl unexpose b-ash
+check "exposed port is closed again" sh -c "! nc -w 2 127.0.0.1 $port </dev/null"
+check "status no longer lists it" sh -c './ashctl status | grep -q "Nothing exposed"'
+check "unexposing twice is an error" sh -c '! ./ashctl unexpose b-ash'
+
 step "second connect is refused"
 ./ashctl connect --server 127.0.0.1:7000 --user ash
 check "second connect failed" sh -c '! ./ashctl connect --server 127.0.0.1:7000 --user ash'

@@ -11,7 +11,7 @@ One shared server serves all users and can run as several replicas. Works with a
 
 Working: the tunnel server, the client library, and the `ashctl` client, which connects in the background, exposes local ports, forwards single addresses, and makes cluster Service names resolve locally.
 
-Not built yet: saved profiles, several connections at once, adding an exposure to a running connection, and the terminal dashboard.
+Not built yet: saved profiles, several connections at once, and the terminal dashboard.
 
 ## Usage
 
@@ -24,21 +24,32 @@ That connects to the cluster and returns. The connection keeps running in the ba
 | Command | What it does |
 |---|---|
 | `ashctl connect [--context NAME]` | Connect and keep running in the background |
-| `ashctl status` | Show whether you are connected, and what is exposed and forwarded |
+| `ashctl expose NAME:PORT[:LOCALPORT][/PROTOCOL]` | Make a local port reachable in the cluster, on the running connection |
+| `ashctl unexpose NAME` | Stop exposing it |
+| `ashctl status` | Show whether you are connected, and what is exposed |
 | `ashctl disconnect` | Stop the connection and remove its Services and hosts entries |
 | `ashctl logs` | Show the background connection's output |
 | `ashctl cleanup` | Remove hosts-file entries left behind by a crash |
 
-One connection runs at a time. Everything the connection should do is given to `connect`:
+One connection runs at a time.
+
+### Exposing a local service
+
+Once connected, expose and unexpose as often as you like, with no reconnecting:
 
 ```bash
-ashctl connect --context dev --expose b-ash:8080:3000/http --forward 5432:postgres.db.svc:5432
+ashctl expose b-ash:8080:3000/http
 ```
 
-- `--expose` creates the Service `b-ash` in the tunnel namespace. Anything in the cluster that connects to `b-ash.k8s-tunnel.svc:8080` reaches `localhost:3000` on your machine.
-- `--forward` listens on `localhost:5432` and sends those connections to `postgres.db.svc:5432` from inside the cluster.
+That creates the Service `b-ash` in the tunnel namespace. Anything in the cluster that connects to `b-ash.k8s-tunnel.svc:8080` reaches `localhost:3000` on your machine. The `/http` part tells the mesh the port speaks HTTP, which header-based routing needs.
 
-Add `--foreground` to stay attached to the terminal instead, until Ctrl-C.
+```bash
+ashctl unexpose b-ash
+```
+
+Several can be given at once, and specs with the same name become one Service with several ports. Exposing a name again replaces it. Exposures come back by themselves after a reconnect and are all removed on disconnect.
+
+`connect` also accepts `--expose` to start with some already in place, and `--forward LOCALPORT:HOST:PORT` to reach one cluster address on a local port when names do not resolve (see below). Add `--foreground` to stay attached to the terminal instead, until Ctrl-C.
 
 ### Cluster names on your machine
 

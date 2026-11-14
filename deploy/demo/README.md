@@ -33,34 +33,49 @@ Leave it running. It is your "local service B", listening on `localhost:8081`.
 
 ## 3. Connect
 
-In another terminal:
+In a terminal started as administrator, so that cluster names resolve on your machine:
 
 ```powershell
-.\bin\ashctl.exe connect --context docker-desktop --expose color-api-dev:8080:8081/http --forward 9000:frontend.default.svc:8080 --forward 9001:frontend-preview.default.svc:8080
+.\bin\ashctl.exe connect --context docker-desktop
 ```
 
-It returns once connected and keeps running in the background. This one command:
+It returns once connected and keeps running in the background. Skip this if you are already connected.
 
-- exposes your local port 8081 in the cluster as the Service `color-api-dev`, which `frontend-preview` calls;
-- makes the cluster's `frontend` reachable at `http://localhost:9000`;
-- makes the cluster's `frontend-preview` reachable at `http://localhost:9001`.
+## 4. Look at the cluster's own version
 
-## 4. Look
+- <http://frontend.default.svc.cluster.local:8080> shows **red**: frontend → color-api, all inside the cluster.
+- <http://color-api.default.svc.cluster.local:8080/color> is the API itself.
 
-- <http://localhost:9000> shows **red**: frontend → color-api, all inside the cluster.
-- <http://localhost:9001> shows **blue**: frontend-preview (cluster) → tunnel → the container on your laptop.
+A newly installed Service can take up to 30 seconds to become resolvable.
+
+## 5. Put your laptop in the path
+
+```powershell
+.\bin\ashctl.exe expose color-api-dev:8080:8081/http
+```
+
+This exposes your local port 8081 in the cluster as the Service `color-api-dev`, which `frontend-preview` calls.
+
+- <http://frontend-preview.default.svc.cluster.local:8080> shows **blue**: frontend-preview (cluster) → tunnel → the container on your laptop.
+- <http://frontend.default.svc.cluster.local:8080> still shows **red**.
 
 The request log of the container from step 2 shows a line for every call that came from the cluster.
 
-Stop the blue container and reload <http://localhost:9001>: the colour call fails, because the cluster is really calling your laptop.
+Take it away again and the preview's colour call fails, because the cluster really was calling your laptop:
 
-## 5. With cluster names (administrator terminal)
+```powershell
+.\bin\ashctl.exe unexpose color-api-dev
+```
 
-Run the same connect command from a terminal started as administrator. `ashctl` then also makes cluster Service names resolve on your machine, so these work in a browser with no `--forward` at all:
+## Without an administrator terminal
 
-- <http://frontend.default.svc.cluster.local:8080>
-- <http://frontend-preview.default.svc.cluster.local:8080>
-- <http://color-api.default.svc.cluster.local:8080/color>
+Names will not resolve, so reach the two frontends through local ports instead:
+
+```powershell
+.\bin\ashctl.exe connect --context docker-desktop --forward 9000:frontend.default.svc:8080 --forward 9001:frontend-preview.default.svc:8080
+```
+
+Then use <http://localhost:9000> and <http://localhost:9001>. `ashctl expose` works the same.
 
 ## Clean up
 
