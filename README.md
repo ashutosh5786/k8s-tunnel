@@ -9,9 +9,9 @@ One shared server serves all users and can run as several replicas. Works with a
 
 ## Status
 
-Working: the tunnel server, the client library, and a `tunnel connect` command with explicit forwards.
+Working: the tunnel server, the client library, and a `tunnel connect` command that exposes local ports, forwards single addresses, and can make cluster Service names resolve locally.
 
-Not built yet: resolving cluster FQDNs on the laptop without per-address forwards, saved profiles, background mode, and the terminal dashboard.
+Not built yet: saved profiles, background mode, and the terminal dashboard.
 
 ## Usage
 
@@ -26,8 +26,38 @@ That does two things until you press Ctrl-C:
 
 It reconnects by itself if the connection drops, and removes its Services when it exits.
 
+### Cluster names on your machine
+
+```bash
+tunnel connect --hosts --home-namespace shop --expose b-ash:8080:3000/http
+```
+
+With `--hosts`, every cluster Service name works locally with its own port, so a service whose configuration holds addresses like `cart.shop.svc.cluster.local:8080` runs unchanged. It needs a terminal started as administrator (Windows) or `sudo` (Linux), because it edits the hosts file.
+
+How it works:
+
+- The client asks the tunnel server which Services exist, and refreshes that every 30 seconds.
+- Each Service gets its own loopback address (`127.77.0.1` upwards). The client listens there on the Service's ports and sends connections through the tunnel.
+- The hosts file gets one line per Service mapping `name.namespace`, `name.namespace.svc` and `name.namespace.svc.cluster.local` to that address. With `--home-namespace`, Services in that namespace also resolve by bare name.
+- Every line it writes ends in `# k8s-tunnel`. Nothing else in the file is touched, and the lines are removed on exit.
+
+If the client is killed before it can clean up, remove the leftover lines with:
+
+```bash
+tunnel cleanup
+```
+
+Limits: TCP only; names resolve only for Services (not individual pods); a new Service takes up to 30 seconds to appear; macOS is not supported yet because it needs each loopback address added to the interface first. A name of the form `name.namespace` can shadow a real internet host when the namespace is also a top-level domain, for example a Service `web` in namespace `dev` shadows `web.dev`. Use `--hosts-namespaces` to limit which namespaces are resolved.
+
+### Flags
+
 | Flag | Meaning |
 |---|---|
+| `--hosts` | Make cluster Service names resolve locally. Needs an elevated terminal. |
+| `--hosts-namespaces a,b` | With `--hosts`, only resolve Services in these namespaces. Default: all. |
+| `--home-namespace NS` | With `--hosts`, Services in this namespace also resolve by bare name. |
+| `--cluster-domain` | The cluster's DNS suffix. Default `cluster.local`. |
+| `--hosts-file` | Hosts file to manage. Defaults to the system one. |
 | `--expose NAME:PORT[:LOCALPORT][/PROTOCOL]` | Expose a local port. Repeat it for more ports; specs with the same name become one multi-port Service. The protocol (`http`, `grpc`, ...) is set as the Service port's `appProtocol`, which the mesh needs for header-based routing. |
 | `--forward LOCALPORT:HOST:PORT` | Reach a cluster address on a local port. Repeatable. Listens on loopback only. |
 | `--context`, `--kubeconfig` | Which cluster to use. Defaults to your current kubectl context. |
@@ -75,9 +105,10 @@ See `deploy/chart/k8s-tunnel/values.yaml` for replicas, the port range, who may 
 | Who | Access | Scope |
 |---|---|---|
 | The server | Full access to `services` | Its own namespace only |
+| The server, for `--hosts` | Read-only access to `services` | Cluster-wide; turn off with `discovery.enabled=false` |
 | People using the tunnel | `get`/`list` on `pods`, `get`/`create` on `pods/portforward` | The tunnel namespace only |
 
-Nothing cluster-wide is needed. The chart creates a `<release>-user` Role for people; bind it with `users.subjects` or your own RoleBinding. Being able to port-forward to the server pods is what grants use of the tunnel.
+The read-only Service listing is the only cluster-wide permission, and people using the tunnel need none of their own. The chart creates a `<release>-user` Role for people; bind it with `users.subjects` or your own RoleBinding. Being able to port-forward to the server pods is what grants use of the tunnel.
 
 ## Layout
 
@@ -89,11 +120,11 @@ Nothing cluster-wide is needed. The chart creates a `<release>-user` Role for pe
 | `internal/protocol` | Wire protocol and stream multiplexing shared by client and server |
 | `internal/kube` | Kubeconfig loading, server pod selection, port-forward transport |
 | `internal/client/connect` | Keeps a session alive: connect, expose, forward, reconnect |
-| `internal/client/egress` | Local listeners that send connections into the cluster |
-| `internal/client/hosts` | Hosts-file entries for cluster FQDNs (not built yet) |
+| `internal/client/egress` | Local listeners that send connections into the cluster, including one loopback address per Service |
+| `internal/client/hosts` | Hosts-file entries for cluster Service names |
 | `internal/client/daemon` | Background mode and profiles (not built yet) |
 | `internal/server` | Shared tunnel server: sessions, cluster dials, listeners for exposed ports |
-| `internal/server/kubepub` | Publishes each exposure as a Service that selects the owning replica |
+| `internal/server/kubepub` | Publishes each exposure as a Service that selects the owning replica; lists cluster Services for clients |
 | `internal/tui` | Terminal dashboard (not built yet) |
 | `deploy/chart/k8s-tunnel` | Helm chart for the server |
 

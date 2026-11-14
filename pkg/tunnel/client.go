@@ -8,6 +8,7 @@ package tunnel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -223,6 +224,44 @@ func (c *Client) Expose(ctx context.Context, name string, ports []Port) (*Exposu
 		for _, p := range r.Ports {
 			out.Ports = append(out.Ports, ExposedPort{Name: p.Name, Port: p.Port, LocalPort: p.LocalPort, ServerPort: p.ServerPort})
 		}
+	}
+	return out, nil
+}
+
+// Service is a cluster Service and its TCP ports.
+type Service struct {
+	Namespace string
+	Name      string
+	Ports     []int
+}
+
+// Services lists the cluster's Services as the server sees them, limited
+// to the given namespaces if any. It fails if the server has discovery
+// turned off.
+func (c *Client) Services(ctx context.Context, namespaces ...string) ([]Service, error) {
+	st, _, err := c.open(ctx, &protocol.Request{Type: protocol.TypeServices, Services: &protocol.Services{Namespaces: namespaces}})
+	if err != nil {
+		return nil, err
+	}
+	defer st.Close()
+	deadline := time.Now().Add(2 * time.Minute)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	st.SetDeadline(deadline)
+	stop := context.AfterFunc(ctx, func() { st.Reset() })
+	defer stop()
+
+	var list []protocol.ServiceInfo
+	if err := json.NewDecoder(io.LimitReader(st, protocol.MaxServicesBody)).Decode(&list); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		return nil, fmt.Errorf("tunnel: read service list: %w", err)
+	}
+	out := make([]Service, len(list))
+	for i, s := range list {
+		out[i] = Service{Namespace: s.Namespace, Name: s.Name, Ports: s.Ports}
 	}
 	return out, nil
 }

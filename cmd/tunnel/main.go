@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"k8s-tunnel/internal/client/connect"
+	"k8s-tunnel/internal/client/hosts"
 	"k8s-tunnel/internal/kube"
 	"k8s-tunnel/pkg/tunnel"
 )
@@ -28,12 +29,16 @@ import (
 const usage = `k8s-tunnel connects a local service to a Kubernetes cluster.
 
 Usage:
-  tunnel connect [flags]
+  tunnel connect [flags]     connect to the cluster until interrupted
+  tunnel cleanup             remove hosts-file entries left by a crashed run
 
 Examples:
   # Make localhost:3000 reachable in the cluster as Service "b-ash" port 8080,
   # and reach the cluster's Postgres on localhost:5432.
   tunnel connect --expose b-ash:8080:3000/http --forward 5432:postgres.db.svc:5432
+
+  # Make every cluster Service name work locally (needs an elevated terminal).
+  tunnel connect --hosts --expose b-ash:8080:3000/http
 
 Run "tunnel connect -h" for all flags.
 `
@@ -55,6 +60,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "connect":
 		return runConnect(ctx, args[1:], stdout, stderr)
+	case "cleanup":
+		return runCleanup(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
@@ -86,6 +93,12 @@ func runConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		port       = fs.Int("port", 7000, "tunnel server port inside the pod")
 		server     = fs.String("server", "", "connect straight to HOST:PORT instead of through a cluster (for local testing)")
 		debug      = fs.Bool("debug", false, "verbose logging")
+
+		useHosts      = fs.Bool("hosts", false, "make cluster Service names resolve locally by managing hosts-file entries (needs an elevated terminal)")
+		hostsFile     = fs.String("hosts-file", hosts.DefaultPath(), "hosts file to manage with --hosts")
+		hostsNS       = fs.String("hosts-namespaces", "", "with --hosts, only resolve Services in these comma-separated namespaces (default: all)")
+		homeNamespace = fs.String("home-namespace", "", "with --hosts, Services in this namespace also resolve by bare name, as for a pod running there")
+		clusterDomain = fs.String("cluster-domain", "cluster.local", "the cluster's DNS suffix, used with --hosts")
 	)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -111,8 +124,22 @@ func runConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if cfg.Forwards, err = parseForwards(forwards); err != nil {
 		return err
 	}
-	if len(cfg.Exposures) == 0 && len(cfg.Forwards) == 0 {
-		return errors.New("nothing to do: give at least one --expose or --forward")
+	if *useHosts {
+		cfg.Hosts = &connect.Hosts{
+			Path:          *hostsFile,
+			HomeNamespace: *homeNamespace,
+			ClusterDomain: *clusterDomain,
+		}
+		for _, ns := range strings.Split(*hostsNS, ",") {
+			if ns = strings.TrimSpace(ns); ns != "" {
+				cfg.Hosts.Namespaces = append(cfg.Hosts.Namespaces, ns)
+			}
+		}
+	} else if *hostsNS != "" || *homeNamespace != "" {
+		return errors.New("--hosts-namespaces and --home-namespace only apply together with --hosts")
+	}
+	if len(cfg.Exposures) == 0 && len(cfg.Forwards) == 0 && cfg.Hosts == nil {
+		return errors.New("nothing to do: give at least one --expose, --forward or --hosts")
 	}
 	level := slog.LevelWarn
 	if *debug {
@@ -140,6 +167,28 @@ func runConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 	}
 	return connect.Run(ctx, cfg)
+}
+
+// runCleanup removes hosts-file entries a previous run left behind, for
+// example after the process was killed.
+func runCleanup(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("tunnel cleanup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	hostsFile := fs.String("hosts-file", hosts.DefaultPath(), "hosts file to clean")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if err := hosts.Remove(*hostsFile); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "removed k8s-tunnel entries from %s\n", *hostsFile)
+	return nil
 }
 
 func defaultUser() string {

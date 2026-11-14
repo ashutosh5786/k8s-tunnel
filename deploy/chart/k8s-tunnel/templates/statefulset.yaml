@@ -53,6 +53,7 @@ spec:
             - -listen=:{{ .Values.server.port }}
             - -port-range={{ .Values.server.portRange }}
             - -grace={{ .Values.server.grace }}
+            - -discovery={{ .Values.discovery.enabled }}
             {{- if .Values.server.debug }}
             - -debug
             {{- end }}

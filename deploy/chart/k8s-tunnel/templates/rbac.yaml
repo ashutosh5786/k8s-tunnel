@@ -29,6 +29,36 @@ subjects:
     name: {{ include "k8s-tunnel.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.rbac.create .Values.discovery.enabled }}
+---
+# Read-only, cluster-wide: lets the server tell clients which Services
+# exist. This is the server's only access outside its own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8s-tunnel.fullname" . }}-{{ .Release.Namespace }}-discovery
+  labels:
+    {{- include "k8s-tunnel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8s-tunnel.fullname" . }}-{{ .Release.Namespace }}-discovery
+  labels:
+    {{- include "k8s-tunnel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8s-tunnel.fullname" . }}-{{ .Release.Namespace }}-discovery
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "k8s-tunnel.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.users.createRole }}
 ---
 # What a person needs to use the tunnel: find the server pods and

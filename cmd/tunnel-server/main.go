@@ -36,6 +36,7 @@ func run() error {
 		portRange = flag.String("port-range", "20000-29999", "ports used for exposed local services")
 		grace     = flag.Duration("grace", 30*time.Second, "how long an exposure stays published after its session drops")
 		publish   = flag.Bool("publish", true, "create a Kubernetes Service per exposure; turn off to run outside a cluster")
+		discovery = flag.Bool("discovery", true, "let clients list the cluster's Services so their names resolve locally; needs cluster-wide read access to Services")
 		podName   = flag.String("pod-name", os.Getenv("POD_NAME"), "this pod's name (env POD_NAME)")
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"), "this pod's namespace (env POD_NAMESPACE)")
 		debug     = flag.Bool("debug", false, "verbose logging")
@@ -72,6 +73,9 @@ func run() error {
 			return err
 		}
 		cfg.Publisher = &kubepub.Publisher{Client: client, Namespace: *namespace, PodName: *podName}
+		if *discovery {
+			cfg.Lister = &kubepub.Lister{Client: client}
+		}
 	}
 
 	ln, err := net.Listen("tcp", *listen)
@@ -81,7 +85,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("tunnel-server listening", "addr", ln.Addr().String(), "replica", *podName, "ports", *portRange, "publish", *publish)
+	log.Info("tunnel-server listening", "addr", ln.Addr().String(), "replica", *podName, "ports", *portRange, "publish", *publish, "discovery", cfg.Lister != nil)
 	err = server.New(cfg).Serve(ctx, ln)
 	log.Info("tunnel-server stopped")
 	return err

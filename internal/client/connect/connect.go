@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"k8s-tunnel/internal/client/egress"
+	"k8s-tunnel/internal/client/hosts"
 	"k8s-tunnel/pkg/tunnel"
 )
 
@@ -32,6 +33,24 @@ type Forward struct {
 	Target string
 }
 
+// Hosts turns on resolving cluster Service names locally through the
+// hosts file.
+type Hosts struct {
+	// Path is the hosts file to manage.
+	Path string
+	// Namespaces limits which Services are resolved. Empty means all.
+	Namespaces []string
+	// HomeNamespace is the namespace whose Services also resolve by bare
+	// name, as they would for a pod running there.
+	HomeNamespace string
+	// ClusterDomain is the cluster's DNS suffix. Defaults to
+	// "cluster.local".
+	ClusterDomain string
+	// Interval is how often the Service list is refreshed. Defaults to
+	// 30s.
+	Interval time.Duration
+}
+
 // Config describes a session.
 type Config struct {
 	User    string
@@ -41,6 +60,8 @@ type Config struct {
 	Transport func(ctx context.Context) (net.Conn, error)
 	Exposures []Exposure
 	Forwards  []Forward
+	// Hosts, when set, makes cluster Service names resolve locally.
+	Hosts *Hosts
 	// Out receives human-readable status lines. May be nil.
 	Out io.Writer
 	Log *slog.Logger
@@ -80,12 +101,54 @@ func Run(ctx context.Context, cfg Config) error {
 		return c.DialContext(ctx, network, address)
 	}
 
+	// Fail before connecting if the hosts file cannot be changed, which
+	// almost always means the terminal is not elevated.
+	var proxy *egress.ServiceProxy
+	if cfg.Hosts != nil {
+		if err := hosts.CheckWritable(cfg.Hosts.Path); err != nil {
+			return err
+		}
+		var err error
+		proxy, err = egress.NewServiceProxy(egress.ProxyOptions{
+			Dial:          dial,
+			Log:           cfg.Log,
+			ClusterDomain: cfg.Hosts.ClusterDomain,
+			HomeNamespace: cfg.Hosts.HomeNamespace,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	fctx, stopForwards := context.WithCancel(ctx)
 	var forwards sync.WaitGroup
 	defer func() {
 		stopForwards()
 		forwards.Wait()
 	}()
+	if proxy != nil {
+		list := func(ctx context.Context) ([]egress.Service, error) {
+			c := current.Load()
+			if c == nil {
+				return nil, errNotConnected
+			}
+			services, err := c.Services(ctx, cfg.Hosts.Namespaces...)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]egress.Service, len(services))
+			for i, s := range services {
+				out[i] = egress.Service{Namespace: s.Namespace, Name: s.Name, Ports: s.Ports}
+			}
+			return out, nil
+		}
+		forwards.Add(1)
+		go func() {
+			defer forwards.Done()
+			// Run removes the hosts entries again when it returns.
+			proxy.Run(fctx, egress.RunConfig{List: list, HostsPath: cfg.Hosts.Path, Interval: cfg.Hosts.Interval, Out: cfg.Out})
+		}()
+	}
 	// Bind every forward before serving any, so a port that is already
 	// taken fails the run without leaving the others half started.
 	listeners := make([]net.Listener, 0, len(cfg.Forwards))

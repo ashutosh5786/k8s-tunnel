@@ -33,6 +33,10 @@ const (
 	// TypeInbound is sent by the server when a cluster connection arrives
 	// for an exposed port.
 	TypeInbound Type = "inbound"
+	// TypeServices asks the server which cluster Services exist. The
+	// Response is followed on the same stream by a JSON array of
+	// ServiceInfo, which can be far larger than a message may be.
+	TypeServices Type = "services"
 )
 
 // Request is the first message on every stream.
@@ -43,6 +47,7 @@ type Request struct {
 	Expose   *Expose   `json:"expose,omitempty"`
 	Unexpose *Unexpose `json:"unexpose,omitempty"`
 	Inbound  *Inbound  `json:"inbound,omitempty"`
+	Services *Services `json:"services,omitempty"`
 }
 
 // Hello identifies the user and the session. The session ID is chosen by
@@ -88,6 +93,21 @@ type Inbound struct {
 	LocalPort  int    `json:"localPort"`
 	RemoteAddr string `json:"remoteAddr,omitempty"`
 }
+
+// Services limits the listing to some namespaces. Empty means all.
+type Services struct {
+	Namespaces []string `json:"namespaces,omitempty"`
+}
+
+// ServiceInfo describes one cluster Service and its TCP ports.
+type ServiceInfo struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Ports     []int  `json:"ports"`
+}
+
+// MaxServicesBody bounds the service listing a client will read.
+const MaxServicesBody = 64 << 20
 
 // Response answers a Request.
 type Response struct {

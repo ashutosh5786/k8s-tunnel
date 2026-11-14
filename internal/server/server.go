@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,6 +49,17 @@ type Sweeper interface {
 	Sweep(ctx context.Context, live func(name string) bool) error
 }
 
+// ServiceInfo describes one cluster Service and its TCP ports.
+type ServiceInfo = protocol.ServiceInfo
+
+// Lister reports which Services exist in the cluster, so clients can make
+// their names resolve locally without needing list rights of their own.
+type Lister interface {
+	// Services lists Services in the given namespaces, or in all
+	// namespaces when none are given.
+	Services(ctx context.Context, namespaces []string) ([]ServiceInfo, error)
+}
+
 // Config configures a Server.
 type Config struct {
 	// Replica is this server's identity, normally the pod name.
@@ -58,6 +70,8 @@ type Config struct {
 	// Publisher may be nil, in which case exposures are reachable only by
 	// server port.
 	Publisher Publisher
+	// Lister may be nil, in which case clients cannot discover Services.
+	Lister Lister
 	// Dial connects to cluster addresses. Defaults to a plain TCP dial.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// DialTimeout bounds each cluster dial. Defaults to 10s.
@@ -389,6 +403,9 @@ func (s *Server) handleStream(ctx context.Context, sess *session, st *protocol.S
 	case req.Type == protocol.TypeDial && req.Dial != nil:
 		s.handleDial(ctx, st, req.Dial)
 		return
+	case req.Type == protocol.TypeServices:
+		s.handleServices(ctx, st, req.Services)
+		return
 	case req.Type == protocol.TypeExpose && req.Expose != nil:
 		reply, err := s.expose(ctx, sess, req.Expose)
 		if err != nil {
@@ -432,6 +449,34 @@ func (s *Server) handleDial(ctx context.Context, st *protocol.Stream, d *protoco
 	}
 	st.SetDeadline(time.Time{})
 	protocol.Pipe(st, conn)
+}
+
+func (s *Server) handleServices(ctx context.Context, st *protocol.Stream, req *protocol.Services) {
+	defer st.Close()
+	if s.cfg.Lister == nil {
+		protocol.WriteMsg(st, protocol.Fail("service discovery is not enabled on this server"))
+		return
+	}
+	var namespaces []string
+	if req != nil {
+		namespaces = req.Namespaces
+	}
+	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	list, err := s.cfg.Lister.Services(lctx, namespaces)
+	cancel()
+	if err != nil {
+		protocol.WriteMsg(st, protocol.Fail("list services: %v", err))
+		return
+	}
+	if list == nil {
+		list = []ServiceInfo{}
+	}
+	if err := protocol.WriteMsg(st, &protocol.Response{OK: true}); err != nil {
+		return
+	}
+	// A large cluster's listing takes longer to send than a handshake.
+	st.SetDeadline(time.Now().Add(2 * time.Minute))
+	json.NewEncoder(st).Encode(list)
 }
 
 const maxPortsPerExposure = 16

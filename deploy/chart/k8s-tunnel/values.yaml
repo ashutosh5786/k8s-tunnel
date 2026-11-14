@@ -27,6 +27,14 @@ server:
   grace: 30s
   debug: false
 
+# Lets clients ask the server which Services exist, so that cluster
+# Service names resolve on developer machines (tunnel connect --hosts).
+# It needs one cluster-wide permission: read-only access to Services.
+# Turn it off to keep the server's access confined to its own namespace;
+# --hosts then stops working and developers use --forward instead.
+discovery:
+  enabled: true
+
 serviceAccount:
   create: true
   # Defaults to the release's full name.
