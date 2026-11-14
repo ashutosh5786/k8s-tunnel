@@ -2,7 +2,7 @@ k8s-tunnel server is installed in namespace "{{ .Release.Namespace }}".
 
 Connect from a developer machine:
 
-  tunnel connect --namespace {{ .Release.Namespace }} --selector app.kubernetes.io/name={{ include "k8s-tunnel.name" . }}{{ if ne (int .Values.server.port) 7000 }} --port {{ .Values.server.port }}{{ end }} \
+  ashctl connect --namespace {{ .Release.Namespace }} --selector app.kubernetes.io/name={{ include "k8s-tunnel.name" . }}{{ if ne (int .Values.server.port) 7000 }} --port {{ .Values.server.port }}{{ end }} \
     --expose my-service:8080:3000/http \
     --forward 5432:postgres.db.svc:5432
 

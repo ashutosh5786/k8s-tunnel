@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -242,7 +243,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 
 	sess, err := s.handshake(mux)
 	if err != nil {
-		s.log.Info("handshake failed", "remote", conn.RemoteAddr().String(), "err", err)
+		// A connection that closes without sending anything is a health
+		// probe from the kubelet, every few seconds. Keep those quiet.
+		level := slog.LevelInfo
+		if errors.Is(err, io.EOF) {
+			level = slog.LevelDebug
+		}
+		s.log.Log(ctx, level, "handshake failed", "remote", conn.RemoteAddr().String(), "err", err)
 		return
 	}
 	s.log.Info("session connected", "session", sess.id, "user", sess.user)

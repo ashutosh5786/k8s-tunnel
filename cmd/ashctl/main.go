@@ -1,5 +1,5 @@
-// Command tunnel is the client: it runs on the developer's machine and
-// connects a local service to the cluster.
+// Command ashctl is the client: it runs on the developer's machine and
+// connects it to a cluster through the tunnel server.
 package main
 
 import (
@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"strconv"
@@ -21,33 +22,37 @@ import (
 	"time"
 
 	"k8s-tunnel/internal/client/connect"
+	"k8s-tunnel/internal/client/daemon"
 	"k8s-tunnel/internal/client/hosts"
 	"k8s-tunnel/internal/kube"
 	"k8s-tunnel/pkg/tunnel"
 )
 
-const usage = `k8s-tunnel connects a local service to a Kubernetes cluster.
+const usage = `ashctl connects your machine to a Kubernetes cluster.
 
 Usage:
-  tunnel connect [flags]     connect to the cluster until interrupted
-  tunnel cleanup             remove hosts-file entries left by a crashed run
+  ashctl connect [--context NAME]   connect and keep running in the background
+  ashctl status                     show whether you are connected
+  ashctl disconnect                 stop the background connection
+  ashctl logs                       show the background connection's output
+  ashctl cleanup                    remove hosts-file entries left by a crash
 
 Examples:
-  # Make localhost:3000 reachable in the cluster as Service "b-ash" port 8080,
-  # and reach the cluster's Postgres on localhost:5432.
-  tunnel connect --expose b-ash:8080:3000/http --forward 5432:postgres.db.svc:5432
+  # Connect to a cluster. From an administrator terminal, every cluster
+  # Service name then works on this machine.
+  ashctl connect --context dev
 
-  # Make every cluster Service name work locally (needs an elevated terminal).
-  tunnel connect --hosts --expose b-ash:8080:3000/http
+  # Also make localhost:3000 reachable in the cluster as Service "b-ash".
+  ashctl connect --context dev --expose b-ash:8080:3000/http
 
-Run "tunnel connect -h" for all flags.
+Run "ashctl connect -h" for all flags.
 `
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "tunnel:", err)
+		fmt.Fprintln(os.Stderr, "ashctl:", err)
 		os.Exit(1)
 	}
 }
@@ -60,6 +65,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "connect":
 		return runConnect(ctx, args[1:], stdout, stderr)
+	case "status":
+		return runStatus(args[1:], stdout)
+	case "disconnect":
+		return runDisconnect(args[1:], stdout)
+	case "logs":
+		return runLogs(args[1:], stdout)
 	case "cleanup":
 		return runCleanup(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -77,102 +88,358 @@ type listFlag []string
 func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
-func runConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("tunnel connect", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	var exposes, forwards listFlag
-	fs.Var(&exposes, "expose", "local port to expose: NAME:PORT[:LOCALPORT][/PROTOCOL], e.g. b-ash:8080:3000/http (repeatable)")
-	fs.Var(&forwards, "forward", "cluster address to reach locally: LOCALPORT:HOST:PORT, e.g. 5432:postgres.db.svc:5432 (repeatable)")
-	var (
-		userName   = fs.String("user", defaultUser(), "name recorded on your exposures")
-		session    = fs.String("session", "", "session id; reuse one to reclaim exposures after a restart (default: random)")
-		kubeconfig = fs.String("kubeconfig", "", "kubeconfig file (default: KUBECONFIG or ~/.kube/config)")
-		kubeCtx    = fs.String("context", "", "kubeconfig context (default: current context)")
-		namespace  = fs.String("namespace", "k8s-tunnel", "namespace the tunnel server runs in")
-		selector   = fs.String("selector", "app.kubernetes.io/name=k8s-tunnel", "label selector for tunnel server pods")
-		port       = fs.Int("port", 7000, "tunnel server port inside the pod")
-		server     = fs.String("server", "", "connect straight to HOST:PORT instead of through a cluster (for local testing)")
-		debug      = fs.Bool("debug", false, "verbose logging")
+// connectOpts holds the parsed flags of "ashctl connect".
+type connectOpts struct {
+	exposes, forwards listFlag
 
-		useHosts      = fs.Bool("hosts", false, "make cluster Service names resolve locally by managing hosts-file entries (needs an elevated terminal)")
-		hostsFile     = fs.String("hosts-file", hosts.DefaultPath(), "hosts file to manage with --hosts")
-		hostsNS       = fs.String("hosts-namespaces", "", "with --hosts, only resolve Services in these comma-separated namespaces (default: all)")
-		homeNamespace = fs.String("home-namespace", "", "with --hosts, Services in this namespace also resolve by bare name, as for a pod running there")
-		clusterDomain = fs.String("cluster-domain", "cluster.local", "the cluster's DNS suffix, used with --hosts")
-	)
+	user, session             string
+	kubeconfig, kubeContext   string
+	namespace, selector       string
+	port                      int
+	server                    string
+	debug                     bool
+	foreground, daemonChild   bool
+	forceHosts, noHosts       bool
+	hostsFile, hostsNS        string
+	homeNamespace, clusterDNS string
+}
+
+func parseConnect(args []string, stderr io.Writer) (*connectOpts, error) {
+	o := &connectOpts{}
+	fs := flag.NewFlagSet("ashctl connect", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&o.kubeContext, "context", "", "kubeconfig context to connect to (default: current context)")
+	fs.Var(&o.exposes, "expose", "local port to expose: NAME:PORT[:LOCALPORT][/PROTOCOL], e.g. b-ash:8080:3000/http (repeatable)")
+	fs.Var(&o.forwards, "forward", "cluster address to reach on a local port: LOCALPORT:HOST:PORT (repeatable)")
+	fs.BoolVar(&o.foreground, "foreground", false, "stay attached to this terminal instead of running in the background")
+	fs.BoolVar(&o.forceHosts, "hosts", false, "require cluster Service names to resolve locally, and fail if the hosts file cannot be changed")
+	fs.BoolVar(&o.noHosts, "no-hosts", false, "do not touch the hosts file")
+	fs.StringVar(&o.homeNamespace, "home-namespace", "", "Services in this namespace also resolve by bare name, as for a pod running there")
+	fs.StringVar(&o.hostsNS, "hosts-namespaces", "", "only resolve Services in these comma-separated namespaces (default: all)")
+	fs.StringVar(&o.hostsFile, "hosts-file", hosts.DefaultPath(), "hosts file to manage")
+	fs.StringVar(&o.clusterDNS, "cluster-domain", "cluster.local", "the cluster's DNS suffix")
+	fs.StringVar(&o.user, "user", defaultUser(), "name recorded on your exposures")
+	fs.StringVar(&o.session, "session", "", "session id; reuse one to reclaim exposures after a restart (default: random)")
+	fs.StringVar(&o.kubeconfig, "kubeconfig", "", "kubeconfig file (default: KUBECONFIG or ~/.kube/config)")
+	fs.StringVar(&o.namespace, "namespace", "k8s-tunnel", "namespace the tunnel server runs in")
+	fs.StringVar(&o.selector, "selector", "app.kubernetes.io/name=k8s-tunnel", "label selector for tunnel server pods")
+	fs.IntVar(&o.port, "port", 7000, "tunnel server port inside the pod")
+	fs.StringVar(&o.server, "server", "", "connect straight to HOST:PORT instead of through a cluster (for local testing)")
+	fs.BoolVar(&o.debug, "debug", false, "verbose logging")
+	// Set by the parent on the background process it starts; not for
+	// people to use.
+	fs.BoolVar(&o.daemonChild, "daemon-child", false, "internal")
 	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if o.forceHosts && o.noHosts {
+		return nil, errors.New("--hosts and --no-hosts cannot be used together")
+	}
+	if o.user == "" {
+		return nil, errors.New("--user is required: could not work out your user name")
+	}
+	return o, nil
+}
+
+// buildConfig turns the flags into a session description. Notes about
+// choices it made on the user's behalf are written to notes.
+func buildConfig(o *connectOpts, stdout, stderr, notes io.Writer) (connect.Config, error) {
+	cfg := connect.Config{User: o.user, Session: o.session, Out: stdout}
+	var err error
+	if cfg.Exposures, err = parseExposes(o.exposes); err != nil {
+		return cfg, err
+	}
+	if cfg.Forwards, err = parseForwards(o.forwards); err != nil {
+		return cfg, err
+	}
+
+	// Resolving cluster names needs the hosts file, which only an
+	// elevated process may change. Unless told otherwise, use it when
+	// possible and carry on without it when not.
+	if !o.noHosts {
+		werr := hosts.CheckWritable(o.hostsFile)
+		switch {
+		case werr == nil:
+			cfg.Hosts = &connect.Hosts{Path: o.hostsFile, HomeNamespace: o.homeNamespace, ClusterDomain: o.clusterDNS}
+			for _, ns := range strings.Split(o.hostsNS, ",") {
+				if ns = strings.TrimSpace(ns); ns != "" {
+					cfg.Hosts.Namespaces = append(cfg.Hosts.Namespaces, ns)
+				}
+			}
+		case o.forceHosts:
+			return cfg, werr
+		default:
+			fmt.Fprintln(notes, "note: cluster Service names will not resolve on this machine, because the hosts file cannot be changed.")
+			fmt.Fprintln(notes, "      Run ashctl from an administrator terminal (or with sudo) to enable that.")
+		}
+	}
+
+	level := slog.LevelWarn
+	if o.debug {
+		level = slog.LevelDebug
+	}
+	cfg.Log = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+
+	if o.server != "" {
+		cfg.Transport = func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", o.server)
+		}
+		return cfg, nil
+	}
+	cluster, err := kube.Load(o.kubeconfig, o.kubeContext)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Transport = func(ctx context.Context) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		pod, err := kube.PickPod(ctx, cluster.Client, o.namespace, o.selector, cfg.Session)
+		if err != nil {
+			return nil, err
+		}
+		return cluster.PortForward(ctx, o.namespace, pod, o.port)
+	}
+	return cfg, nil
+}
+
+func runConnect(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	o, err := parseConnect(args, stderr)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	if !o.foreground {
+		return connectInBackground(ctx, o, args, stdout, stderr)
 	}
 
-	cfg := connect.Config{User: *userName, Session: *session, Out: stdout}
-	if cfg.User == "" {
-		return errors.New("--user is required: could not work out your user name")
+	if o.session == "" {
+		o.session = newSessionID()
 	}
-	if cfg.Session == "" {
-		cfg.Session = newSessionID()
-	}
-	var err error
-	if cfg.Exposures, err = parseExposes(exposes); err != nil {
+	cfg, err := buildConfig(o, stdout, stderr, stdout)
+	if err != nil {
 		return err
 	}
-	if cfg.Forwards, err = parseForwards(forwards); err != nil {
-		return err
-	}
-	if *useHosts {
-		cfg.Hosts = &connect.Hosts{
-			Path:          *hostsFile,
-			HomeNamespace: *homeNamespace,
-			ClusterDomain: *clusterDomain,
-		}
-		for _, ns := range strings.Split(*hostsNS, ",") {
-			if ns = strings.TrimSpace(ns); ns != "" {
-				cfg.Hosts.Namespaces = append(cfg.Hosts.Namespaces, ns)
-			}
-		}
-	} else if *hostsNS != "" || *homeNamespace != "" {
-		return errors.New("--hosts-namespaces and --home-namespace only apply together with --hosts")
-	}
-	if len(cfg.Exposures) == 0 && len(cfg.Forwards) == 0 && cfg.Hosts == nil {
-		return errors.New("nothing to do: give at least one --expose, --forward or --hosts")
-	}
-	level := slog.LevelWarn
-	if *debug {
-		level = slog.LevelDebug
-	}
-	cfg.Log = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-
-	if *server != "" {
-		cfg.Transport = func(ctx context.Context) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", *server)
-		}
-	} else {
-		cluster, err := kube.Load(*kubeconfig, *kubeCtx)
+	if o.daemonChild {
+		dir, err := daemon.DefaultDir()
 		if err != nil {
 			return err
 		}
-		cfg.Transport = func(ctx context.Context) (net.Conn, error) {
-			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			pod, err := kube.PickPod(ctx, cluster.Client, *namespace, *selector, cfg.Session)
-			if err != nil {
-				return nil, err
-			}
-			return cluster.PortForward(ctx, *namespace, pod, *port)
+		if err := dir.Write(daemon.State{PID: os.Getpid(), Context: o.kubeContext, Session: o.session, Started: time.Now().UTC()}); err != nil {
+			return err
 		}
+		defer dir.Clear()
+		var cancel context.CancelFunc
+		ctx, cancel = dir.WatchStop(ctx)
+		defer cancel()
 	}
 	return connect.Run(ctx, cfg)
+}
+
+// How long "ashctl connect" waits for the background process to report
+// that it is connected before returning anyway.
+const connectWait = 90 * time.Second
+
+// connectInBackground starts a detached copy of this program that holds
+// the connection, waits until it is connected, and returns.
+func connectInBackground(ctx context.Context, o *connectOpts, args []string, stdout, stderr io.Writer) error {
+	dir, err := daemon.DefaultDir()
+	if err != nil {
+		return err
+	}
+	if s, running := dir.Running(); running {
+		where := ""
+		if s.Context != "" {
+			where = " to " + s.Context
+		}
+		return fmt.Errorf("already connected%s (process %d); run \"ashctl disconnect\" first", where, s.PID)
+	}
+	// Catch wrong flags and a bad kubeconfig here, where the user sees
+	// them, rather than in the background process's log.
+	if _, err := buildConfig(o, io.Discard, io.Discard, io.Discard); err != nil {
+		return err
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(string(dir), 0o700); err != nil {
+		return err
+	}
+	logFile, err := os.Create(dir.LogPath())
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	childArgs := append([]string{"connect", "--foreground", "--daemon-child"}, args...)
+	cmd := exec.Command(exe, childArgs...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	daemon.Detach(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start background process: %w", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	// Relay the background process's output until it is connected.
+	shown := 0
+	relay := func() string {
+		body, _ := os.ReadFile(dir.LogPath())
+		if len(body) > shown {
+			stdout.Write(body[shown:])
+			shown = len(body)
+		}
+		return string(body)
+	}
+	deadline := time.Now().Add(connectWait)
+	for {
+		select {
+		case err := <-exited:
+			relay()
+			if err == nil {
+				err = errors.New("it exited")
+			}
+			return fmt.Errorf("the background process stopped before connecting: %w", err)
+		case <-ctx.Done():
+			// Interrupted while waiting: do not leave it half started.
+			dir.RequestStop()
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+		if strings.Contains(relay(), "connected to ") {
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintln(stdout, "Still connecting in the background. Check with \"ashctl status\".")
+			return nil
+		}
+	}
+	// Give the lines that follow the connection (exposures, names) a
+	// moment to arrive: stop once the output has been quiet for a second.
+	quiet, giveUp := time.Now(), time.Now().Add(5*time.Second)
+	for time.Since(quiet) < time.Second && time.Now().Before(giveUp) {
+		before := shown
+		time.Sleep(200 * time.Millisecond)
+		relay()
+		if shown != before {
+			quiet = time.Now()
+		}
+	}
+	fmt.Fprintf(stdout, "\nRunning in the background (process %d). Use \"ashctl status\" and \"ashctl disconnect\".\n", cmd.Process.Pid)
+	return cmd.Process.Release()
+}
+
+func noArgs(name string, args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("\"ashctl %s\" takes no arguments", name)
+	}
+	return nil
+}
+
+func runStatus(args []string, stdout io.Writer) error {
+	if err := noArgs("status", args); err != nil {
+		return err
+	}
+	dir, err := daemon.DefaultDir()
+	if err != nil {
+		return err
+	}
+	s, running := dir.Running()
+	if !running {
+		fmt.Fprintln(stdout, "Not connected.")
+		return nil
+	}
+	where := "the current context"
+	if s.Context != "" {
+		where = "context " + s.Context
+	}
+	fmt.Fprintf(stdout, "Connected to %s since %s (process %d, session %s).\n\n",
+		where, s.Started.Local().Format("15:04:05"), s.PID, s.Session)
+	if body, err := os.ReadFile(dir.LogPath()); err == nil {
+		stdout.Write(lastLines(body, 15))
+	}
+	return nil
+}
+
+// lastLines returns the final n lines of body.
+func lastLines(body []byte, n int) []byte {
+	lines := strings.SplitAfter(string(body), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return []byte(strings.Join(lines, ""))
+}
+
+// How long "ashctl disconnect" waits for a clean shutdown before it
+// ends the process by force.
+const disconnectWait = 20 * time.Second
+
+func runDisconnect(args []string, stdout io.Writer) error {
+	if err := noArgs("disconnect", args); err != nil {
+		return err
+	}
+	dir, err := daemon.DefaultDir()
+	if err != nil {
+		return err
+	}
+	s, running := dir.Running()
+	if !running {
+		fmt.Fprintln(stdout, "Not connected.")
+		return nil
+	}
+	if err := dir.RequestStop(); err != nil {
+		return err
+	}
+	if daemon.WaitExit(s.PID, disconnectWait) {
+		dir.Clear()
+		fmt.Fprintln(stdout, "Disconnected.")
+		return nil
+	}
+	// It did not shut down by itself. Ending it by force skips its own
+	// clean-up, so say what may be left behind.
+	if p, err := os.FindProcess(s.PID); err == nil {
+		p.Kill()
+	}
+	daemon.WaitExit(s.PID, 5*time.Second)
+	dir.Clear()
+	fmt.Fprintln(stdout, "Disconnected by force. If cluster names still resolve to dead addresses, run \"ashctl cleanup\" from an administrator terminal.")
+	return nil
+}
+
+func runLogs(args []string, stdout io.Writer) error {
+	if err := noArgs("logs", args); err != nil {
+		return err
+	}
+	dir, err := daemon.DefaultDir()
+	if err != nil {
+		return err
+	}
+	body, err := os.ReadFile(dir.LogPath())
+	if errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintln(stdout, "No log yet: ashctl has not been connected on this machine.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(body)
+	return err
 }
 
 // runCleanup removes hosts-file entries a previous run left behind, for
 // example after the process was killed.
 func runCleanup(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("tunnel cleanup", flag.ContinueOnError)
+	fs := flag.NewFlagSet("ashctl cleanup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	hostsFile := fs.String("hosts-file", hosts.DefaultPath(), "hosts file to clean")
 	if err := fs.Parse(args); err != nil {

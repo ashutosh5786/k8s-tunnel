@@ -1,0 +1,169 @@
+# A small application for trying the tunnel.
+#
+#   frontend          -> color-api (in the cluster, the "red" version)
+#   frontend-preview  -> color-api-dev.k8s-tunnel (your laptop, through the tunnel)
+#
+# Both frontends are the same image. "frontend" is the application as it
+# normally runs. "frontend-preview" stands in for what a routing-key rule
+# in a service mesh would do: it sends its API calls to the Service that
+# ashctl creates for the copy of color-api running on your machine.
+#
+# Everything lives in the "default" namespace because the frontend image
+# calls color-api.default.svc.cluster.local.
+#
+# The images are built for arm64. On amd64 nodes they run only if the
+# container runtime can emulate arm64, which Docker Desktop normally can.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: color-api
+  namespace: default
+  labels: {app: color-api}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: color-api}
+  template:
+    metadata:
+      labels: {app: color-api}
+    spec:
+      containers:
+        - name: color-api
+          image: ashutosh5786/color-api:red
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: color-api
+  namespace: default
+  labels: {app: color-api}
+spec:
+  selector: {app: color-api}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      appProtocol: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: default
+  labels: {app: frontend}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend}
+  template:
+    metadata:
+      labels: {app: frontend}
+    spec:
+      containers:
+        - name: frontend
+          image: ashutosh5786/frontend-demo:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: default
+  labels: {app: frontend}
+spec:
+  selector: {app: frontend}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      appProtocol: http
+---
+# The preview frontend's nginx configuration. It differs from the image's
+# own in one way: API calls go to the tunnel's Service, and the name is
+# looked up on every request, so nginx starts and keeps working whether or
+# not anyone is connected yet.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-preview-nginx
+  namespace: default
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      server_name _;
+
+      root /usr/share/nginx/html;
+      index index.html;
+
+      resolver kube-dns.kube-system.svc.cluster.local valid=5s;
+
+      location / {
+        try_files $uri /index.html;
+      }
+
+      location /api/ {
+        set $upstream color-api-dev.k8s-tunnel.svc.cluster.local;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$upstream:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-preview
+  namespace: default
+  labels: {app: frontend-preview}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend-preview}
+  template:
+    metadata:
+      labels: {app: frontend-preview}
+    spec:
+      containers:
+        - name: frontend
+          image: ashutosh5786/frontend-demo:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 5
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: frontend-preview-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-preview
+  namespace: default
+  labels: {app: frontend-preview}
+spec:
+  selector: {app: frontend-preview}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      appProtocol: http

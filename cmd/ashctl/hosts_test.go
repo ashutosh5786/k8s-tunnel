@@ -83,7 +83,7 @@ func TestHostsModeEndToEnd(t *testing.T) {
 	stdout, stderr := &lockedBuffer{}, &lockedBuffer{}
 	result := make(chan error, 1)
 	go func() {
-		result <- run(ctx, []string{"connect",
+		result <- run(ctx, []string{"connect", "--foreground",
 			"--server", serverLn.Addr().String(),
 			"--user", "ash", "--session", "hosts-e2e",
 			"--hosts", "--hosts-file", hostsPath, "--home-namespace", "shop",
@@ -157,19 +157,6 @@ func TestHostsModeFailsEarlyWhenHostsFileCannotBeChanged(t *testing.T) {
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), missing) {
 		t.Errorf("err = %v, want an error naming the hosts file", err)
-	}
-}
-
-func TestHostsOnlyFlagsNeedHosts(t *testing.T) {
-	for _, args := range [][]string{
-		{"connect", "--server", "127.0.0.1:1", "--expose", "b:80", "--home-namespace", "shop"},
-		{"connect", "--server", "127.0.0.1:1", "--expose", "b:80", "--hosts-namespaces", "shop"},
-	} {
-		var stdout, stderr bytes.Buffer
-		err := run(context.Background(), args, &stdout, &stderr)
-		if err == nil || !strings.Contains(err.Error(), "--hosts") {
-			t.Errorf("%v: err = %v", args, err)
-		}
 	}
 }
 

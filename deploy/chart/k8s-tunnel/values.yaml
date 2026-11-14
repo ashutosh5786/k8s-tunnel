@@ -28,10 +28,10 @@ server:
   debug: false
 
 # Lets clients ask the server which Services exist, so that cluster
-# Service names resolve on developer machines (tunnel connect --hosts).
+# Service names resolve on developer machines (ashctl connect).
 # It needs one cluster-wide permission: read-only access to Services.
 # Turn it off to keep the server's access confined to its own namespace;
-# --hosts then stops working and developers use --forward instead.
+# names then no longer resolve and developers use --forward instead.
 discovery:
   enabled: true
 

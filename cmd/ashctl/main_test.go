@@ -117,7 +117,8 @@ func TestCommandLineErrors(t *testing.T) {
 	}{
 		"no command":      {nil, "no command"},
 		"unknown command": {[]string{"teleport"}, "unknown command"},
-		"nothing to do":   {[]string{"connect", "--server", "127.0.0.1:1"}, "nothing to do"},
+		"hosts conflict":  {[]string{"connect", "--hosts", "--no-hosts"}, "cannot be used together"},
+		"status with arg": {[]string{"status", "now"}, "takes no arguments"},
 		"bad expose":      {[]string{"connect", "--server", "127.0.0.1:1", "--expose", "oops"}, "invalid --expose"},
 		"bad forward":     {[]string{"connect", "--server", "127.0.0.1:1", "--forward", "oops"}, "invalid --forward"},
 		"stray argument":  {[]string{"connect", "--expose", "b:80", "extra"}, "unexpected argument"},
@@ -135,7 +136,7 @@ func TestCommandLineErrors(t *testing.T) {
 	if err := run(context.Background(), []string{"help"}, &stdout, &stderr); err != nil {
 		t.Errorf("help: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "tunnel connect") {
+	if !strings.Contains(stdout.String(), "ashctl connect") {
 		t.Errorf("help output: %q", stdout.String())
 	}
 }
@@ -219,7 +220,7 @@ func TestConnectCommandEndToEnd(t *testing.T) {
 	stdout, stderr := &lockedBuffer{}, &lockedBuffer{}
 	result := make(chan error, 1)
 	go func() {
-		result <- run(ctx, []string{"connect",
+		result <- run(ctx, []string{"connect", "--foreground", "--no-hosts",
 			"--server", serverLn.Addr().String(),
 			"--user", "ash", "--session", "e2e",
 			"--expose", fmt.Sprintf("b-ash:8080:%d/http", localPort),

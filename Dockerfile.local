@@ -1,0 +1,13 @@
+# Fast local image: packages a tunnel-server binary that was already
+# compiled on this machine, so no Go toolchain image has to be downloaded.
+#
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/image/tunnel-server ./cmd/tunnel-server
+#   docker build -f Dockerfile.local -t k8s-tunnel-server:dev dist/image
+#
+# Use GOARCH=arm64 instead when the cluster nodes are arm64. For images you
+# publish, use the main Dockerfile, which builds from source for both.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY tunnel-server /tunnel-server
+USER 65532:65532
+EXPOSE 7000
+ENTRYPOINT ["/tunnel-server"]
