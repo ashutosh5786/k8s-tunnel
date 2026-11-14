@@ -1,0 +1,59 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test and tooling
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+go.work
+go.work.sum
+/vendor/
+
+# Debug binaries
+__debug_bin*
+
+# Secrets and local config (never commit cluster credentials)
+.env
+.env.*
+!.env.example
+*.kubeconfig
+kubeconfig
+kubeconfig.*
+*.pem
+*.key
+*.crt
+*.p12
+
+# Local tunnel state (profiles, daemon pid/socket, logs)
+/.k8s-tunnel/
+*.pid
+*.sock
+*.log
+
+# Rendered deploy output
+/deploy/rendered/
+*.tgz
+
+# Editors and IDEs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
