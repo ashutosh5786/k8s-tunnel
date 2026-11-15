@@ -13,6 +13,71 @@ Working: the tunnel server, the client library, and the `ashctl` client, which c
 
 Not built yet: several connections at once, and the terminal dashboard.
 
+## How it works
+
+The laptop makes one outgoing connection to a tunnel server pod, through the Kubernetes API server (a port-forward). Traffic in both directions travels over that one connection, so nothing ever connects inward to the laptop.
+
+```mermaid
+flowchart LR
+    subgraph laptop["Developer laptop"]
+        app["Browser, curl or<br/>a local service"]
+        hosts["hosts file<br/>cart.shop.svc -> 127.77.0.5"]
+        ashctl["ashctl<br/>(background process)"]
+        local["Local service<br/>localhost:3000"]
+    end
+
+    subgraph cluster["Kubernetes cluster"]
+        api["API server"]
+        subgraph ns["namespace k8s-tunnel"]
+            server["tunnel-server pod<br/>k8s-tunnel-0"]
+            svc["Service cart-ash<br/>selects k8s-tunnel-0"]
+        end
+        target["Service cart.shop<br/>and its pods"]
+        caller["Any workload<br/>for example frontend"]
+    end
+
+    ashctl ==>|"one outgoing connection<br/>(port-forward, authenticated by kubeconfig)"| api
+    api ==> server
+
+    app -.->|"looks up the name"| hosts
+    app -->|"1. connects to 127.77.0.5:8080"| ashctl
+    server -->|"2. dials cart.shop.svc:8080"| target
+
+    caller -->|"A. calls cart-ash.k8s-tunnel.svc:8080"| svc
+    svc -->|"B. to the pod's port 20017"| server
+    ashctl -->|"C. connects to localhost:3000"| local
+```
+
+The thick arrows are the tunnel. Steps 1 and 2 are the laptop reaching a cluster Service; steps A to C are a cluster workload reaching a service on the laptop.
+
+```mermaid
+sequenceDiagram
+    participant L as Local app or service
+    participant C as ashctl (laptop)
+    participant S as tunnel-server pod
+    participant K as Cluster Services
+
+    Note over C,S: ashctl connect: one outgoing connection through the API server
+    C->>S: hello (session ID, user)
+    C->>S: which Services exist?
+    S-->>C: list of Services
+    Note over C: gives each Service a 127.77.x.x address<br/>and writes the names to the hosts file
+
+    Note over L,K: Laptop to cluster
+    L->>C: connect to cart.shop.svc:8080 (127.77.0.5)
+    C->>S: new stream: dial cart.shop.svc:8080
+    S->>K: connects from inside the cluster
+    K-->>L: response, back along the same path
+
+    Note over L,K: Cluster to laptop
+    C->>S: expose cart-ash:8080 -> local 3000
+    Note over S: opens port 20017 and creates Service cart-ash,<br/>which selects this pod only
+    K->>S: a workload calls cart-ash.k8s-tunnel.svc:8080
+    S->>C: new stream: inbound for local port 3000
+    C->>L: connects to localhost:3000
+    L-->>K: response, back along the same path
+```
+
 ## Usage
 
 ```bash
