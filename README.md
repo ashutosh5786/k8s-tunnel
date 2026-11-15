@@ -41,13 +41,37 @@ Once connected, expose and unexpose as often as you like, with no reconnecting:
 ashctl expose b-ash:8080:3000/http
 ```
 
-That creates the Service `b-ash` in the tunnel namespace. Anything in the cluster that connects to `b-ash.k8s-tunnel.svc:8080` reaches `localhost:3000` on your machine. The `/http` part tells the mesh the port speaks HTTP, which header-based routing needs.
+That creates the Service `b-ash` in the tunnel namespace. Anything in the cluster that connects to `b-ash.k8s-tunnel.svc:8080` reaches `localhost:3000` on your machine.
+
+The argument is not a URL. It is four pieces of information:
+
+```
+b-ash : 8080 : 3000 / http
+  │      │      │      │
+  │      │      │      └─ protocol the service speaks
+  │      │      └──────── port your service listens on, on your machine
+  │      └─────────────── port the cluster uses to call it
+  └────────────────────── name of the Service created in the cluster
+```
+
+| Piece | Meaning | Notes |
+|---|---|---|
+| Name | The Service name. Callers reach it at `NAME.k8s-tunnel.svc`. | Your choice; any name not already in use. `<service>-<user>` keeps names unique and shows whose they are. |
+| Cluster port | The port callers in the cluster connect to. | Normally the port the real service uses. |
+| Local port | Where your service listens on your machine. | Leave it out when it equals the cluster port: `b-ash:8080`. |
+| Protocol | `http` or `grpc`. Tells the mesh what the port carries, which header-based routing needs. | Leave it out for plain TCP such as a database. |
 
 ```bash
 ashctl unexpose b-ash
 ```
 
 Several can be given at once, and specs with the same name become one Service with several ports. Exposing a name again replaces it. Exposures come back by themselves after a reconnect and are all removed on disconnect.
+
+Exposing creates an address; it does not move any traffic. The real service keeps receiving everything it did before. Something else decides which requests go to your copy:
+
+- a routing rule in the service mesh, for example "requests carrying this routing key go to `b-ash.k8s-tunnel.svc`";
+- or a caller configured to use your address, as the demo below does;
+- or, for a quick check, calling the address directly from a pod.
 
 `connect` also accepts `--expose` to start with some already in place, and `--forward LOCALPORT:HOST:PORT` to reach one cluster address on a local port when names do not resolve (see below). Add `--foreground` to stay attached to the terminal instead, until Ctrl-C.
 
@@ -111,15 +135,296 @@ In another terminal, connect to it directly:
 
 The client prints the server port chosen for the exposure. Connecting to that port on localhost reaches `localhost:3000`, which is what a Service would do in a cluster.
 
-## Local cluster and demo application
+## Demo
 
-For a Docker-based local cluster (Docker Desktop's Kubernetes or kind), one script builds the server image, loads it into the nodes and installs the chart:
+A ten-minute walkthrough on a local cluster, with a two-service application: a web page that asks a `color-api` for a colour and paints its background with it.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\local\deploy.ps1
+```
+                    cluster                                    your machine
+  ┌──────────────────────────────────────────────┐
+  │  frontend ─────────────► color-api  (red)    │
+  │                                              │
+  │  frontend-preview ─► color-api-dev ─► tunnel ─┼──────► color-api (blue)
+  └──────────────────────────────────────────────┘           localhost:8081
 ```
 
-`deploy/demo` holds a small two-service application and a walkthrough for trying the tunnel with it.
+- `frontend` is the application as it normally runs. It calls the cluster's `color-api`, which answers red.
+- `frontend-preview` is the same frontend, set up to call `color-api-dev` in the tunnel namespace. That Service only exists while you expose it, and it leads to your machine. It stands in for a routing-key rule in a service mesh.
+
+The point of the demo: the cluster keeps showing red, your own copy shows blue, and one command decides whether the cluster can reach your copy.
+
+The steps are the same on every system. They are written out for Windows first; the [Linux commands](#on-linux) follow.
+
+### On Windows
+
+PowerShell, with Docker Desktop's Kubernetes.
+
+#### Set up (once)
+
+1. Build the client and server:
+
+   ```powershell
+   go build -o bin\ ./cmd/...
+   ```
+
+2. Install the tunnel server into the local cluster. This builds the server image, loads it into the cluster nodes and installs the chart:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File deploy\local\deploy.ps1
+   ```
+
+3. Install the demo application and wait until all three pods are `1/1 Running`:
+
+   ```powershell
+   kubectl apply -f deploy\demo\demo.yaml
+   ```
+
+   ```powershell
+   kubectl get pods -n default
+   ```
+
+4. Start your own copy of the API on your machine and leave it running. It prints a line for every request it receives:
+
+   ```powershell
+   docker run --rm -p 8081:8080 -e BG_COLOR=blue ashutosh5786/color-api:blue
+   ```
+
+   The colour comes from `BG_COLOR`, not from the image tag. Any CSS colour works, for example `green`.
+
+#### Walkthrough
+
+Use a terminal started with **Run as administrator**, so that cluster names resolve on your machine.
+
+1. **Before connecting, the cluster is out of reach.** Open this in a browser; it does not load, because the name only exists inside the cluster:
+
+   ```
+   http://frontend.default.svc.cluster.local:8080
+   ```
+
+2. **Connect.** The command returns once connected and keeps running in the background:
+
+   ```powershell
+   .\bin\ashctl.exe connect --context docker-desktop
+   ```
+
+   ```
+   connected to k8s-tunnel-0 as you (session s89e6abfdca3f74c4)
+   resolving 7 cluster services by name
+
+   Running in the background (process 33720). Use "ashctl status" and "ashctl disconnect".
+   ```
+
+3. **Reload the page. It is red.** Same address, no port-forward. Frontend and API both run in the cluster. The API can be called directly too:
+
+   ```powershell
+   curl.exe http://color-api.default.svc.cluster.local:8080/color
+   ```
+
+   ```
+   {"color":"red"}
+   ```
+
+4. **Open the preview frontend. It has no colour yet.** It stays on "loading...", because the Service it calls does not exist:
+
+   ```
+   http://frontend-preview.default.svc.cluster.local:8080
+   ```
+
+5. **Expose your machine.**
+
+   ```powershell
+   .\bin\ashctl.exe expose color-api-dev:8080:8081/http
+   ```
+
+   ```
+   exposed   color-api-dev.k8s-tunnel.svc:8080 -> localhost:8081
+   ```
+
+6. **Press Refresh on the preview page. It turns blue,** and the container from set-up step 4 prints a request line. A pod in the cluster has just called your machine.
+
+7. **Press Refresh on the first page. It is still red.** The real service is untouched; only callers sent to your copy reach you.
+
+8. **See what was added to the cluster:** one Service, pointing at the tunnel.
+
+   ```powershell
+   kubectl get svc -n k8s-tunnel
+   ```
+
+9. **Take it away.** The Service is removed and the preview page goes back to "loading...":
+
+   ```powershell
+   .\bin\ashctl.exe unexpose color-api-dev
+   ```
+
+10. **Disconnect.** Cluster names stop resolving and nothing is left behind:
+
+    ```powershell
+    .\bin\ashctl.exe disconnect
+    ```
+
+Without an administrator terminal, names do not resolve. Reach the two frontends through local ports instead, at `http://localhost:9000` and `http://localhost:9001`:
+
+```powershell
+.\bin\ashctl.exe connect --context docker-desktop --forward 9000:frontend.default.svc:8080 --forward 9001:frontend-preview.default.svc:8080
+```
+
+#### Clean up
+
+```powershell
+.\bin\ashctl.exe disconnect
+```
+
+```powershell
+kubectl delete -f deploy\demo\demo.yaml
+```
+
+### On Linux
+
+Bash, with a local [kind](https://kind.sigs.k8s.io/) cluster. The steps and what you should see are the same as on Windows; only the commands differ.
+
+Two things are specific to Linux:
+
+- **Use `sudo` for every `ashctl` command.** Making cluster names resolve means editing `/etc/hosts`, which needs root. The background connection then belongs to root, so `expose`, `status` and `disconnect` need `sudo` as well to find it.
+- **Tell `connect` where your kubeconfig is.** Under `sudo` it would otherwise look in root's home directory.
+
+#### Set up (once)
+
+1. Build the client and server:
+
+   ```bash
+   go build -o bin/ ./cmd/...
+   ```
+
+2. Install the tunnel server into the local cluster. This builds the server image, loads it into the cluster nodes and installs the chart:
+
+   ```bash
+   bash deploy/local/deploy.sh
+   ```
+
+3. Install the demo application and wait until all three pods are `1/1 Running`:
+
+   ```bash
+   kubectl apply -f deploy/demo/demo.yaml
+   ```
+
+   ```bash
+   kubectl get pods -n default
+   ```
+
+   The demo images are built for arm64. On an arm64 machine they run as they are. On x86-64 they need emulation, which Docker Desktop includes and plain Docker Engine does not; install it once with:
+
+   ```bash
+   docker run --privileged --rm tonistiigi/binfmt --install arm64
+   ```
+
+4. Start your own copy of the API on your machine and leave it running:
+
+   ```bash
+   docker run --rm -p 8081:8080 -e BG_COLOR=blue ashutosh5786/color-api:blue
+   ```
+
+#### Walkthrough
+
+1. **Before connecting, the cluster is out of reach.** This fails, because the name only exists inside the cluster:
+
+   ```bash
+   curl http://frontend.default.svc.cluster.local:8080
+   ```
+
+2. **Connect.** With kind the context is usually `kind-kind`; `kubectl config get-contexts` lists yours:
+
+   ```bash
+   sudo ./bin/ashctl connect --context kind-kind --kubeconfig "$HOME/.kube/config" --user "$USER"
+   ```
+
+3. **The cluster's own version is red.** Open `http://frontend.default.svc.cluster.local:8080` in a browser, or ask the API:
+
+   ```bash
+   curl http://color-api.default.svc.cluster.local:8080/color
+   ```
+
+   ```
+   {"color":"red"}
+   ```
+
+4. **The preview frontend has no colour yet.** `http://frontend-preview.default.svc.cluster.local:8080` stays on "loading...". Its API call fails:
+
+   ```bash
+   curl -i http://frontend-preview.default.svc.cluster.local:8080/api/color
+   ```
+
+5. **Expose your machine.**
+
+   ```bash
+   sudo ./bin/ashctl expose color-api-dev:8080:8081/http
+   ```
+
+6. **The preview is now blue,** served from your machine. Press Refresh on the preview page, or:
+
+   ```bash
+   curl http://frontend-preview.default.svc.cluster.local:8080/api/color
+   ```
+
+   ```
+   {"color":"blue"}
+   ```
+
+   The container from set-up step 4 prints a line for the request.
+
+7. **The normal frontend is still red.**
+
+   ```bash
+   curl http://frontend.default.svc.cluster.local:8080/api/color
+   ```
+
+8. **See what was added to the cluster:** one Service, pointing at the tunnel.
+
+   ```bash
+   kubectl get svc -n k8s-tunnel
+   ```
+
+9. **Take it away.**
+
+   ```bash
+   sudo ./bin/ashctl unexpose color-api-dev
+   ```
+
+10. **Disconnect.** Cluster names stop resolving and `/etc/hosts` is back as it was:
+
+    ```bash
+    sudo ./bin/ashctl disconnect
+    ```
+
+Without `sudo`, names do not resolve. Drop `sudo`, `--kubeconfig` and `--user` from every command and reach the two frontends through local ports instead, at `http://localhost:9000` and `http://localhost:9001`:
+
+```bash
+./bin/ashctl connect --context kind-kind --forward 9000:frontend.default.svc:8080 --forward 9001:frontend-preview.default.svc:8080
+```
+
+#### Clean up
+
+```bash
+sudo ./bin/ashctl disconnect
+```
+
+```bash
+kubectl delete -f deploy/demo/demo.yaml
+```
+
+### If something goes wrong
+
+| What you see | Cause and fix |
+|---|---|
+| `connect` says cluster Service names will not resolve | The terminal is not elevated. Disconnect, reopen it as administrator, connect again. Or use the forwards below. |
+| A cluster address does not load right after installing the demo | New Services are picked up every 30 seconds. Wait and reload. |
+| The page shows an old colour | Use the page's Refresh button, or Ctrl+F5. |
+| The preview stays on "loading..." after `expose` | The local container is not running, or is on another port than the one given to `expose`. |
+| `already connected` | Run `ashctl disconnect` first. |
+| Windows says an Application Control policy blocked `ashctl.exe` | Smart App Control blocks programs you compiled yourself. It has no per-file exception; it can only be turned off as a whole in Windows Security, which may not be reversible. Running the client on Linux avoids it. |
+| A demo pod stays in `CrashLoopBackOff` with `exec format error` | The demo images are built for arm64. On amd64 nodes they need emulation, which Docker Desktop normally provides. |
+| On Linux, `ashctl expose` or `status` says "not connected" although you connected | The connection was started with `sudo` and this command was not, or the other way round. Use `sudo` for all of them or for none. |
+| On Linux, `connect` cannot find the cluster under `sudo` | Pass `--kubeconfig "$HOME/.kube/config"`, so it does not look in root's home directory. |
+| Not sure what state things are in | `ashctl status` shows the connection and what is exposed. |
 
 ## Deploy the server
 

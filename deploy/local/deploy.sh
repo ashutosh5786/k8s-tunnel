@@ -17,7 +17,13 @@ HELM_IMAGE=alpine/helm:3.16.4
 export MSYS_NO_PATHCONV=1
 root=$(pwd -W 2>/dev/null || pwd)
 
-echo "==> cluster: $(kubectl config current-context)"
+if [ ! -f go.mod ]; then
+  echo "Run this from the repository root (the folder with go.mod)." >&2
+  exit 1
+fi
+
+context=$(kubectl config current-context)
+echo "==> cluster: $context"
 arch=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')
 
 echo "==> building tunnel-server for linux/$arch"
@@ -51,4 +57,5 @@ kubectl -n "$NAMESPACE" rollout status statefulset/k8s-tunnel --timeout=120s
 
 echo
 echo "Installed. Connect with:"
-echo "  ./bin/ashctl connect"
+echo "  sudo ./bin/ashctl connect --context $context --kubeconfig \"\$HOME/.kube/config\" --user \"\$USER\""
+echo "(sudo makes cluster names resolve on this machine; on Windows use an administrator terminal instead)"
