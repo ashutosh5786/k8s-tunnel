@@ -367,6 +367,30 @@ func (s *Session) Exposures() []*tunnel.Exposure {
 	return out
 }
 
+// Has reports whether exactly this exposure is already in place, so that
+// applying a description twice does not disturb what is running.
+func (s *Session) Has(e Exposure) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.wanted[e.Name]
+	if !ok || s.live[e.Name] == nil || len(cur.Ports) != len(e.Ports) {
+		return false
+	}
+	for i := range cur.Ports {
+		if cur.Ports[i] != e.Ports[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Names returns the names of everything exposed, in the order added.
+func (s *Session) Names() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.order...)
+}
+
 // Connected reports whether the session has a live connection right now.
 func (s *Session) Connected() bool { return s.current.Load() != nil }
 

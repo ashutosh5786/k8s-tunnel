@@ -11,7 +11,7 @@ One shared server serves all users and can run as several replicas. Works with a
 
 Working: the tunnel server, the client library, and the `ashctl` client, which connects in the background, exposes local ports, forwards single addresses, and makes cluster Service names resolve locally.
 
-Not built yet: saved profiles, several connections at once, and the terminal dashboard.
+Not built yet: several connections at once, and the terminal dashboard.
 
 ## Usage
 
@@ -26,6 +26,8 @@ That connects to the cluster and returns. The connection keeps running in the ba
 | `ashctl connect [--context NAME]` | Connect and keep running in the background |
 | `ashctl expose NAME:PORT[:LOCALPORT][/PROTOCOL]` | Make a local port reachable in the cluster, on the running connection |
 | `ashctl unexpose NAME` | Stop exposing it |
+| `ashctl generate` | Write a commented `ashctl.yaml` to fill in |
+| `ashctl apply` | Connect if needed and expose what `ashctl.yaml` lists |
 | `ashctl status` | Show whether you are connected, and what is exposed |
 | `ashctl disconnect` | Stop the connection and remove its Services and hosts entries |
 | `ashctl logs` | Show the background connection's output |
@@ -74,6 +76,49 @@ Exposing creates an address; it does not move any traffic. The real service keep
 - or, for a quick check, calling the address directly from a pod.
 
 `connect` also accepts `--expose` to start with some already in place, and `--forward LOCALPORT:HOST:PORT` to reach one cluster address on a local port when names do not resolve (see below). Add `--foreground` to stay attached to the terminal instead, until Ctrl-C.
+
+### Keeping it in a file
+
+Typing the same `expose` arguments every day gets old, and a team should not have to pass port numbers around. Describe what a project needs in an `ashctl.yaml`, kept in the project's repository:
+
+```bash
+ashctl generate
+```
+
+That writes an `ashctl.yaml` in the current folder with every field explained and shown with an example, all commented out. Remove the `#` from what you need:
+
+```yaml
+context: dev
+homeNamespace: shop
+expose:
+  - name: cart-${USER}
+    port: 8080
+    localPort: 3000
+    protocol: http
+```
+
+Then, in that folder:
+
+```bash
+ashctl apply
+```
+
+- If you are not connected, it connects using the file and exposes everything in it.
+- If you are connected, it changes the running connection to match: it exposes what is missing, replaces what changed, and leaves the rest untouched. Run it again whenever you edit the file.
+- `${USER}` in a name is replaced by your user name, so everyone sharing the file gets their own Service and nobody collides.
+- Things you exposed by hand with `ashctl expose` are left alone. `ashctl apply --prune` also removes everything the file does not list.
+- `ashctl apply -f other.yaml` uses another file; `ashctl generate -o other.yaml` writes one. `generate` never overwrites an existing file unless given `--force`.
+
+| Field | Meaning |
+|---|---|
+| `context` | Cluster to connect to, as named in your kubeconfig. Default: your current context. |
+| `homeNamespace` | Namespace whose Services also resolve by bare name. |
+| `hostsNamespaces` | Only resolve Services in these namespaces. Default: all. |
+| `expose` | List of `name`, `port`, optional `localPort` and `protocol`, as for `ashctl expose`. |
+| `forward` | List of `localPort` and `target` (`HOST:PORT`), for when names do not resolve. |
+| `namespace` | Namespace the tunnel server runs in. Default `k8s-tunnel`. |
+
+`context`, `homeNamespace`, `hostsNamespaces`, `forward` and `namespace` are used when connecting. Changing them needs `ashctl disconnect` followed by `ashctl apply`; `apply` says so when it applies. A misspelt field name is reported as an error, not ignored.
 
 ### Cluster names on your machine
 
@@ -464,6 +509,7 @@ The read-only Service listing is the only cluster-wide permission, and people us
 | `internal/client/connect` | Keeps a session alive: connect, expose, forward, reconnect |
 | `internal/client/egress` | Local listeners that send connections into the cluster, including one loopback address per Service |
 | `internal/client/hosts` | Hosts-file entries for cluster Service names |
+| `internal/client/profile` | The `ashctl.yaml` file: reading, checking, and the generated template |
 | `internal/client/daemon` | Background mode: which process holds the connection, its log, and the request to stop it |
 | `internal/server` | Shared tunnel server: sessions, cluster dials, listeners for exposed ports |
 | `internal/server/kubepub` | Publishes each exposure as a Service that selects the owning replica; lists cluster Services for clients |

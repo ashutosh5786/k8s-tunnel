@@ -37,6 +37,8 @@ Usage:
   ashctl status                     show whether you are connected, and what is exposed
   ashctl disconnect                 stop the background connection
   ashctl logs                       show the background connection's output
+  ashctl generate                   write a commented ashctl.yaml to fill in
+  ashctl apply                      connect if needed and expose what ashctl.yaml lists
   ashctl cleanup                    remove hosts-file entries left by a crash
 
 Examples:
@@ -79,6 +81,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runDisconnect(args[1:], stdout)
 	case "logs":
 		return runLogs(args[1:], stdout)
+	case "generate":
+		return runGenerate(args[1:], stdout, stderr)
+	case "apply":
+		return runApply(ctx, args[1:], stdout, stderr)
 	case "cleanup":
 		return runCleanup(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -292,6 +298,42 @@ func controlHandler(sess *connect.Session) daemon.Handler {
 				}
 				fmt.Fprintf(&out, "unexposed %s\n", name)
 			}
+		case "apply":
+			// args: an optional leading "--prune", then exposure specs.
+			prune := len(args) > 0 && args[0] == "--prune"
+			if prune {
+				args = args[1:]
+			}
+			exposures, err := parseExposes(args)
+			if err != nil {
+				return "", err
+			}
+			keep := map[string]bool{}
+			for _, e := range exposures {
+				keep[e.Name] = true
+				if sess.Has(e) {
+					fmt.Fprintf(&out, "unchanged %s\n", e.Name)
+					continue
+				}
+				exp, err := sess.Expose(ctx, e)
+				if err != nil {
+					return out.String(), fmt.Errorf("expose %s: %w", e.Name, err)
+				}
+				for _, line := range connect.Describe(exp) {
+					fmt.Fprintf(&out, "exposed   %s\n", line)
+				}
+			}
+			if prune {
+				for _, name := range sess.Names() {
+					if keep[name] {
+						continue
+					}
+					if err := sess.Unexpose(ctx, name); err != nil {
+						return out.String(), err
+					}
+					fmt.Fprintf(&out, "unexposed %s\n", name)
+				}
+			}
 		case "list":
 			for _, exp := range sess.Exposures() {
 				for _, line := range connect.Describe(exp) {
@@ -319,7 +361,7 @@ func runControl(command string, args []string, stdout io.Writer) error {
 	if s.Control == "" {
 		return errors.New("the running connection was started by an older ashctl: disconnect and connect again")
 	}
-	out, err := daemon.Call(s.Control, s.Token, command, args, time.Minute)
+	out, err := daemon.Call(s.Control, s.Token, command, args, daemonCallTimeout)
 	io.WriteString(stdout, out)
 	return err
 }
@@ -508,6 +550,9 @@ func lastLines(body []byte, n int) []byte {
 // How long "ashctl disconnect" waits for a clean shutdown before it
 // ends the process by force.
 const disconnectWait = 20 * time.Second
+
+// How long a command waits for the background connection to carry it out.
+const daemonCallTimeout = time.Minute
 
 func runDisconnect(args []string, stdout io.Writer) error {
 	if err := noArgs("disconnect", args); err != nil {

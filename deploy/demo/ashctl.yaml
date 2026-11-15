@@ -1,0 +1,18 @@
+# ashctl.yaml for the demo application.
+#
+# From the repository root:
+#
+#   ashctl apply -f deploy/demo/ashctl.yaml
+#
+# It exposes the copy of color-api running on your machine (port 8081) to
+# the cluster as the Service the demo's frontend-preview calls.
+#
+# The name is fixed and has no ${USER} in it because frontend-preview is
+# configured to call exactly "color-api-dev". In a real project, include
+# ${USER} so each developer gets their own Service.
+
+expose:
+  - name: color-api-dev
+    port: 8080
+    localPort: 8081
+    protocol: http
