@@ -3,7 +3,7 @@ module k8s-tunnel
 go 1.27.4
 
 require (
-	github.com/ashutosh5786/ashbox v0.0.0-20261121154001-25d2a94b5c44
+	github.com/ashutosh5786/ashbox v0.0.0-20261121175141-1f95545b0002
 	github.com/libp2p/go-yamux/v5 v5.1.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
