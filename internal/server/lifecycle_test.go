@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/protocol"
-	"k8s-tunnel/internal/server"
-	"k8s-tunnel/pkg/tunnel"
+	"github.com/ashutosh5786/k8s-tunnel/internal/protocol"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/pkg/tunnel"
 )
 
 // startCustom runs a server with the given config and returns its address

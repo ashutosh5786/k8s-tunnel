@@ -9,7 +9,7 @@ import (
 	"net"
 	"time"
 
-	"k8s-tunnel/internal/protocol"
+	"github.com/ashutosh5786/k8s-tunnel/internal/protocol"
 )
 
 // Dialer connects to a cluster address through the tunnel. It is called

@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/client/connect"
-	"k8s-tunnel/internal/server"
-	"k8s-tunnel/pkg/tunnel"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/connect"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/pkg/tunnel"
 )
 
 func TestParseExposes(t *testing.T) {

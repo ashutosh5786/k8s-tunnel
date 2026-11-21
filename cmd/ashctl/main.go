@@ -21,11 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	"k8s-tunnel/internal/client/connect"
-	"k8s-tunnel/internal/client/daemon"
-	"k8s-tunnel/internal/client/hosts"
-	"k8s-tunnel/internal/kube"
-	"k8s-tunnel/pkg/tunnel"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/connect"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/daemon"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/hosts"
+	"github.com/ashutosh5786/k8s-tunnel/internal/kube"
+	"github.com/ashutosh5786/k8s-tunnel/pkg/tunnel"
 )
 
 const usage = `ashctl connects your machine to a Kubernetes cluster.

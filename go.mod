@@ -1,4 +1,4 @@
-module k8s-tunnel
+module github.com/ashutosh5786/k8s-tunnel
 
 go 1.27.4
 

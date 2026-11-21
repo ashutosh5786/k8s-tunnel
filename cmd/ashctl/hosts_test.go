@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
 )
 
 // fixedLister reports one fixed set of Services.

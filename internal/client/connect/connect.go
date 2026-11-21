@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"k8s-tunnel/internal/client/egress"
-	"k8s-tunnel/internal/client/hosts"
-	"k8s-tunnel/pkg/tunnel"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/egress"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/hosts"
+	"github.com/ashutosh5786/k8s-tunnel/pkg/tunnel"
 )
 
 // Exposure is a local service to make reachable in the cluster.

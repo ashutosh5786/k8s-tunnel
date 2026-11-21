@@ -17,9 +17,9 @@ import (
 
 	v1alpha1 "github.com/ashutosh5786/ashbox/api/v1alpha1"
 
-	"k8s-tunnel/internal/client/daemon"
-	"k8s-tunnel/internal/client/sandbox"
-	"k8s-tunnel/internal/kube"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/daemon"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/sandbox"
+	"github.com/ashutosh5786/k8s-tunnel/internal/kube"
 )
 
 const sandboxUsage = `ashctl sandbox manages ashbox sandboxes: changed copies of services that

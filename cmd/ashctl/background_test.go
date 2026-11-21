@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/client/daemon"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/daemon"
 )
 
 // isolate points the background-process files at a temporary directory so

@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s-tunnel/internal/protocol"
+	"github.com/ashutosh5786/k8s-tunnel/internal/protocol"
 )
 
 // Options configures a Client.

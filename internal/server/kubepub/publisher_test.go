@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
 )
 
 const ns = "tunnel"

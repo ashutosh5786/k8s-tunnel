@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 
-	"k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
 )
 
 const (

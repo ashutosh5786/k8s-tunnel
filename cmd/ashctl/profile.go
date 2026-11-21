@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"k8s-tunnel/internal/client/daemon"
-	"k8s-tunnel/internal/client/profile"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/daemon"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/profile"
 )
 
 // runGenerate writes a commented starting ashctl.yaml.

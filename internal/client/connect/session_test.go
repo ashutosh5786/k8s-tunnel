@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/pkg/tunnel"
+	"github.com/ashutosh5786/k8s-tunnel/pkg/tunnel"
 )
 
 // startSession runs a Session in the background and waits until it is

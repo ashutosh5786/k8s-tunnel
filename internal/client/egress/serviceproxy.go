@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s-tunnel/internal/client/hosts"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/hosts"
 )
 
 // Service is a cluster Service and its TCP ports.

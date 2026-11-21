@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/server"
-	"k8s-tunnel/pkg/tunnel"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/pkg/tunnel"
 )
 
 // recorder is a Publisher that remembers what is currently published.

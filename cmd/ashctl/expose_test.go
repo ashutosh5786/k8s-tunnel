@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/client/connect"
-	"k8s-tunnel/internal/client/daemon"
-	"k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/connect"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/daemon"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
 )
 
 // fakeBackground stands in for the background process inside this test:

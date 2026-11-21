@@ -11,7 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	"k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
 )
 
 // Lister implements server.Lister by listing Services through the

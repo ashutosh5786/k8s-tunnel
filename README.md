@@ -78,6 +78,16 @@ sequenceDiagram
     L-->>K: response, back along the same path
 ```
 
+## Install
+
+You need Go 1.27 or later:
+
+```bash
+go install github.com/ashutosh5786/k8s-tunnel/cmd/ashctl@latest
+```
+
+This puts `ashctl` in `$(go env GOPATH)/bin`. Make sure that folder is on your PATH, or add `GOBIN=<folder on your PATH>` before the command.
+
 ## Usage
 
 ```bash

@@ -19,8 +19,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"k8s-tunnel/internal/server"
-	"k8s-tunnel/internal/server/kubepub"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server"
+	"github.com/ashutosh5786/k8s-tunnel/internal/server/kubepub"
 )
 
 func main() {

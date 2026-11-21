@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"k8s-tunnel/internal/client/profile"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/profile"
 )
 
 func writeProfile(t *testing.T, body string) string {

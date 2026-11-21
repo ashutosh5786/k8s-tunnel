@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s-tunnel/internal/client/hosts"
+	"github.com/ashutosh5786/k8s-tunnel/internal/client/hosts"
 )
 
 // The tests use their own loopback range so they cannot collide with a

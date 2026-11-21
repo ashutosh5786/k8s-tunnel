@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s-tunnel/internal/protocol"
+	"github.com/ashutosh5786/k8s-tunnel/internal/protocol"
 )
 
 // Port is one port of a published exposure.
