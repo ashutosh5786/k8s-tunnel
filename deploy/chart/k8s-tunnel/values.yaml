@@ -4,8 +4,9 @@
 replicaCount: 1
 
 image:
-  # Where you pushed the image built from the Dockerfile. Required.
-  repository: ""
+  # The published image (linux/amd64 and linux/arm64). Set this to your own
+  # registry if you build the image yourself.
+  repository: docker.io/ashutosh5786/k8s-tunnel-server
   # Defaults to the chart's appVersion.
   tag: ""
   pullPolicy: IfNotPresent

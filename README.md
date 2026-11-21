@@ -571,15 +571,16 @@ kubectl delete -f deploy/demo/demo.yaml
 
 ## Deploy the server
 
-Build and push the image. This builds for both x86-64 and arm64 (Graviton) nodes:
+The chart uses the published image `docker.io/ashutosh5786/k8s-tunnel-server` (x86-64 and arm64):
+
+```bash
+helm install k8s-tunnel deploy/chart/k8s-tunnel --namespace k8s-tunnel --create-namespace
+```
+
+To build the image yourself, for both x86-64 and arm64 (Graviton) nodes:
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 -t REGISTRY/k8s-tunnel-server:0.1.0 --push .
-```
-
-Install the chart:
-
-```bash
 helm install k8s-tunnel deploy/chart/k8s-tunnel --namespace k8s-tunnel --create-namespace --set image.repository=REGISTRY/k8s-tunnel-server --set image.tag=0.1.0
 ```
 
