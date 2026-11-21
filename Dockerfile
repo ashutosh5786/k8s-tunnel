@@ -8,7 +8,7 @@
 
 # The build stage runs on the build machine's own architecture and
 # cross-compiles, which is much faster than emulating the target.
-FROM --platform=$BUILDPLATFORM golang:1.27 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine3.23 AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
