@@ -41,6 +41,10 @@ Usage:
   ashctl apply                      connect if needed and expose what ashctl.yaml lists
   ashctl cleanup                    remove hosts-file entries left by a crash
 
+Sandboxes (needs ashbox in the cluster):
+  ashctl sandbox create|get|list|delete   manage sandboxes ("ashctl sandbox -h")
+  ashctl local NS/NAME --port P[:LOCAL]   send your keyed requests for a workload here
+
 Examples:
   # Connect to a cluster. From an administrator terminal, every cluster
   # Service name then works on this machine.
@@ -87,6 +91,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runApply(ctx, args[1:], stdout, stderr)
 	case "cleanup":
 		return runCleanup(args[1:], stdout, stderr)
+	case "sandbox", "sb":
+		return runSandbox(ctx, args[1:], stdout, stderr)
+	case "local":
+		return runLocal(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
@@ -563,6 +571,9 @@ func runDisconnect(args []string, stdout io.Writer) error {
 		return err
 	}
 	s, running := dir.Running()
+	// Sandboxes made by "ashctl local" route to this connection; remove
+	// them first, also when an earlier connection crashed.
+	deleteLocalSandboxes(context.Background(), dir, stdout)
 	if !running {
 		fmt.Fprintln(stdout, "Not connected.")
 		return nil

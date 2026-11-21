@@ -229,6 +229,39 @@ Limits: TCP only; names resolve only for Services (not individual pods); a new S
 
 The background connection keeps its state and log in `%AppData%\ashctl` on Windows and `~/.config/ashctl` on Linux.
 
+## Sandboxes (ashbox)
+
+k8s-tunnel is the local-development part of [ashbox](https://github.com/ashutosh5786/ashbox). ashbox runs changed copies ("forks") of services in the cluster. Only requests that carry the sandbox's routing key in the `baggage` header reach them. These commands need the ashbox controller in the cluster.
+
+```bash
+# Fork a service with a new image, and wait until it is ready
+ashctl sandbox create pr-42 --fork shop/cart=app:registry.example.com/cart:pr-42 --wait
+curl -H "baggage: routing-key=pr-42" http://cart.shop:8080/
+
+# Or create one from a file
+ashctl sandbox create -f sandbox.yaml
+
+ashctl sandbox get pr-42       # phase, header, forks, expiry, problems
+ashctl sandbox list [--mine]
+ashctl sandbox delete pr-42
+```
+
+Send your keyed requests for a cluster workload to your laptop:
+
+```bash
+ashctl connect
+ashctl local shop/checkout --port 8080:3000
+# Requests with "baggage: routing-key=<you>" for checkout now reach localhost:3000
+ashctl disconnect               # also deletes the sandbox
+```
+
+`ashctl local` exposes the local port through the tunnel as Service `checkout-<you>` and creates (or updates) sandbox `<you>` with a `local` entry that points at it. Use `--sandbox NAME` for another routing key, and `--protocol grpc` or `tcp` for other protocols. The sandbox has a TTL of 8 hours (`--ttl`), in case `disconnect` never runs.
+
+| Flag | Meaning |
+|--|--|
+| `--context`, `--kubeconfig` | Cluster to use. `ashctl local` defaults to the context of the running connection. |
+| `--baggage-key` | Baggage entry the controller routes on. Default `routing-key`, or env `ASHBOX_BAGGAGE_KEY`. |
+
 ## Try it without a cluster
 
 Start the server with Service publishing turned off:
@@ -575,6 +608,7 @@ The read-only Service listing is the only cluster-wide permission, and people us
 | `internal/client/egress` | Local listeners that send connections into the cluster, including one loopback address per Service |
 | `internal/client/hosts` | Hosts-file entries for cluster Service names |
 | `internal/client/profile` | The `ashctl.yaml` file: reading, checking, and the generated template |
+| `internal/client/sandbox` | Client for ashbox `Sandbox` objects: create, get, list, delete, and their text output |
 | `internal/client/daemon` | Background mode: which process holds the connection, its log, and the request to stop it |
 | `internal/server` | Shared tunnel server: sessions, cluster dials, listeners for exposed ports |
 | `internal/server/kubepub` | Publishes each exposure as a Service that selects the owning replica; lists cluster Services for clients |
