@@ -235,10 +235,12 @@ k8s-tunnel is the local-development part of [ashbox](https://github.com/ashutosh
 
 ```bash
 # Fork a service with a new image, and wait until it is ready
-ashctl sandbox create pr-42 --fork shop/cart=app:registry.example.com/cart:pr-42 --wait
-curl -H "baggage: routing-key=pr-42" http://cart.shop:8080/
+ashctl sandbox create pr-42 --fork shop/cart=app:registry.example.com/cart:pr-42 \
+  --key-from "github.com/acme/shop#42" --wait
+curl -H "baggage: routing-key=<key from the output>" http://cart.shop:8080/
 
 # Or create one from a file
+ashctl sandbox generate pr-42          # writes a commented sandbox.yaml to fill in
 ashctl sandbox create -f sandbox.yaml
 
 ashctl sandbox get pr-42       # phase, header, forks, expiry, problems
@@ -246,16 +248,32 @@ ashctl sandbox list [--mine]
 ashctl sandbox delete pr-42
 ```
 
+The routing key is not the sandbox name, and it never changes after creation:
+
+| Flag | Key |
+|--|--|
+| `--key-from ID` | Derived from `ID`. The same `ID` always gives the same key, also after you delete the sandbox and create it again. Use one per pull request. |
+| `--key KEY` | Exactly `KEY`: 8 to 32 characters, `a-z`, `0-9` and `-`. |
+| neither | Random, new for each sandbox. |
+
+`ashctl sandbox list` shows each sandbox's key. When two sandboxes have the same key, the older one keeps it, and the newer one fails until the older one is deleted.
+
+`ashctl sandbox generate` needs no cluster:
+
+- Without `--fork`, it writes a template. Every field is explained, and the file loads as written. Change the example fork to your workload.
+- With `--fork`, `--ttl` and `--description`, it writes the sandbox that `create` would make from the same flags. Commit the file to keep it with your code, or use `-o -` to print it.
+- It never replaces an existing file unless you give `--force`. Use `-o FILE` to write another file.
+
 Send your keyed requests for a cluster workload to your laptop:
 
 ```bash
 ashctl connect
 ashctl local shop/checkout --port 8080:3000
-# Requests with "baggage: routing-key=<you>" for checkout now reach localhost:3000
+# It prints the header. Requests with that header for checkout now reach localhost:3000
 ashctl disconnect               # also deletes the sandbox
 ```
 
-`ashctl local` exposes the local port through the tunnel as Service `checkout-<you>` and creates (or updates) sandbox `<you>` with a `local` entry that points at it. Use `--sandbox NAME` for another routing key, and `--protocol grpc` or `tcp` for other protocols. The sandbox has a TTL of 8 hours (`--ttl`), in case `disconnect` never runs.
+`ashctl local` exposes the local port through the tunnel as Service `checkout-<you>` and creates (or updates) sandbox `<you>` with a `local` entry that points at it. The key is derived from your user name and the sandbox name, so it stays the same each time you connect. Use `--sandbox NAME` for another routing key, and `--protocol grpc` or `tcp` for other protocols. The sandbox has a TTL of 8 hours (`--ttl`), in case `disconnect` never runs.
 
 | Flag | Meaning |
 |--|--|

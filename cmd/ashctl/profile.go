@@ -29,28 +29,34 @@ func runGenerate(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if *force {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	}
-	// O_EXCL makes the "already exists" check and the creation one step,
-	// so a file that appears in between is never overwritten.
-	f, err := os.OpenFile(*out, flags, 0o644)
-	if errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("%s already exists; edit it, or use --force to replace it", *out)
-	}
-	if err != nil {
-		return err
-	}
-	if _, err := io.WriteString(f, profile.Template); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
+	if err := writeNewFile(*out, profile.Template, *force); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "Wrote %s. Edit it, then run \"ashctl apply\".\n", *out)
 	return nil
+}
+
+// writeNewFile writes body to path. It refuses to replace an existing file
+// unless force is set.
+func writeNewFile(path, body string, force bool) error {
+	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	if force {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	// O_EXCL makes the "already exists" check and the creation one step,
+	// so a file that appears in between is never overwritten.
+	f, err := os.OpenFile(path, flags, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%s already exists; edit it, or use --force to replace it", path)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(f, body); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // runApply makes the connection match an ashctl.yaml: it connects if

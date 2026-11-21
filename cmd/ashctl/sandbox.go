@@ -26,15 +26,24 @@ const sandboxUsage = `ashctl sandbox manages ashbox sandboxes: changed copies of
 only requests with the sandbox's routing key reach.
 
 Usage:
-  ashctl sandbox create NAME --fork NS/NAME[=CONTAINER:IMAGE] ... [--ttl 4h]
+  ashctl sandbox create NAME --fork NS/NAME[=CONTAINER:IMAGE] ... [--ttl 4h] [--key-from ID | --key KEY]
   ashctl sandbox create -f sandbox.yaml
+  ashctl sandbox generate [NAME] [-o sandbox.yaml]      commented file to fill in
+  ashctl sandbox generate NAME --fork ... [-o -]       file from flags ("-" prints it)
   ashctl sandbox get NAME
   ashctl sandbox list
   ashctl sandbox delete NAME ...
 
 Examples:
-  ashctl sandbox create pr-42 --fork shop/cart=app:registry.example.com/cart:pr-42 --wait
-  curl -H "baggage: routing-key=pr-42" http://cart.shop:8080/
+  ashctl sandbox create pr-42 --fork shop/cart=app:registry.example.com/cart:pr-42 \
+      --key-from "github.com/acme/shop#42" --wait
+  curl -H "baggage: routing-key=<key from the output>" http://cart.shop:8080/
+
+The routing key never changes after creation, and it is not the name:
+  --key-from ID   key derived from ID; the same ID (say, one pull request)
+                  always gets the same key, also after delete and create
+  --key KEY       this exact key (8-32 characters: a-z, 0-9, '-')
+  neither         a random key, new for each sandbox
 
 Every subcommand takes --context and --kubeconfig. Run "ashctl sandbox create -h" for all flags.
 `
@@ -74,6 +83,8 @@ func runSandbox(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	switch args[0] {
 	case "create":
 		return runSandboxCreate(ctx, args[1:], stdout, stderr)
+	case "generate", "gen":
+		return runSandboxGenerate(args[1:], stdout, stderr)
 	case "get":
 		return runSandboxGet(ctx, args[1:], stdout, stderr)
 	case "list", "ls":
@@ -112,8 +123,16 @@ type createOpts struct {
 	file        string
 	ttl         string
 	description string
+	key         string
+	keyFrom     string
 	wait        bool
 	timeout     time.Duration
+}
+
+// bindKey adds the routing key flags.
+func (o *createOpts) bindKey(fs *flag.FlagSet) {
+	fs.StringVar(&o.keyFrom, "key-from", "", `stable identity the routing key is derived from, e.g. "github.com/acme/shop#42": the same value always gives the same key`)
+	fs.StringVar(&o.key, "key", "", "routing key to use as is: 8 to 32 lower-case letters, digits and '-'")
 }
 
 func runSandboxCreate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -125,6 +144,7 @@ func runSandboxCreate(ctx context.Context, args []string, stdout, stderr io.Writ
 	fs.StringVar(&o.file, "f", "", "create from a Sandbox YAML file")
 	fs.StringVar(&o.ttl, "ttl", "", "lifetime such as 4h or 14d (default 4h; from the file with -f)")
 	fs.StringVar(&o.description, "description", "", "text shown with the sandbox")
+	o.bindKey(fs)
 	fs.BoolVar(&o.wait, "wait", false, "wait until the sandbox is Ready or Failed")
 	fs.DurationVar(&o.timeout, "timeout", 5*time.Minute, "how long --wait waits")
 	pos, err := parseInterspersed(fs, args)
@@ -206,6 +226,9 @@ func buildSandbox(o *createOpts, pos []string) (*v1alpha1.Sandbox, error) {
 	if o.description != "" {
 		sb.Spec.Description = o.description
 	}
+	if err := applyKey(sb, o.key, o.keyFrom); err != nil {
+		return nil, err
+	}
 	switch {
 	case o.ttl != "":
 		sb.Spec.TTL = &v1alpha1.TTL{Duration: o.ttl}
@@ -213,6 +236,100 @@ func buildSandbox(o *createOpts, pos []string) (*v1alpha1.Sandbox, error) {
 		sb.Spec.TTL = &v1alpha1.TTL{Duration: "4h"}
 	}
 	return sb, nil
+}
+
+// applyKey sets spec.routingKey or spec.keySource from the flags. A flag
+// may not contradict the file: the key can never change after creation, so
+// a silent override would be a surprise.
+func applyKey(sb *v1alpha1.Sandbox, key, keyFrom string) error {
+	if key != "" && keyFrom != "" {
+		return errors.New("use either --key or --key-from, not both")
+	}
+	if key != "" {
+		if err := sandbox.ValidKey(key); err != nil {
+			return err
+		}
+		if (sb.Spec.RoutingKey != "" && sb.Spec.RoutingKey != key) || sb.Spec.KeySource != "" {
+			return errors.New("--key conflicts with the routing key set in the file")
+		}
+		sb.Spec.RoutingKey = key
+	}
+	if keyFrom != "" {
+		if (sb.Spec.KeySource != "" && sb.Spec.KeySource != keyFrom) || sb.Spec.RoutingKey != "" {
+			return errors.New("--key-from conflicts with the routing key set in the file")
+		}
+		sb.Spec.KeySource = keyFrom
+	}
+	if sb.Spec.RoutingKey != "" && sb.Spec.KeySource != "" {
+		return errors.New("set routingKey or keySource, not both")
+	}
+	if sb.Spec.RoutingKey != "" {
+		return sandbox.ValidKey(sb.Spec.RoutingKey)
+	}
+	return nil
+}
+
+// runSandboxGenerate writes a Sandbox file. Without --fork it writes a
+// commented template; with --fork it writes the sandbox that
+// "ashctl sandbox create" would make from the same flags. It needs no
+// cluster.
+func runSandboxGenerate(args []string, stdout, stderr io.Writer) error {
+	var o createOpts
+	fs := flag.NewFlagSet("ashctl sandbox generate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Var(&o.forks, "fork", "workload to fork: [rollout/]NAMESPACE/NAME[=CONTAINER:IMAGE] (repeatable); without it, a commented template is written")
+	fs.StringVar(&o.ttl, "ttl", "", "lifetime such as 4h or 14d (default 4h)")
+	fs.StringVar(&o.description, "description", "", "text shown with the sandbox")
+	o.bindKey(fs)
+	baggageKey := fs.String("baggage-key", envOr("ASHBOX_BAGGAGE_KEY", "routing-key"), "baggage entry shown in the template's header example (env ASHBOX_BAGGAGE_KEY)")
+	out := fs.String("o", sandbox.DefaultFile, `file to write, or "-" for standard output`)
+	force := fs.Bool("force", false, "replace the file if it already exists")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
+	var body string
+	if len(o.forks) == 0 {
+		if o.ttl != "" || o.description != "" || o.key != "" || o.keyFrom != "" {
+			return errors.New("--ttl, --description, --key and --key-from need --fork; without --fork, edit them in the template")
+		}
+		name := ""
+		switch len(pos) {
+		case 0:
+		case 1:
+			name = pos[0]
+			if err := sandbox.ValidName(name); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unexpected argument %q", pos[1])
+		}
+		body = sandbox.Template(name, *baggageKey)
+	} else {
+		sb, err := buildSandbox(&o, pos)
+		if err != nil {
+			return err
+		}
+		b, err := sandbox.Marshal(sb)
+		if err != nil {
+			return err
+		}
+		body = string(b)
+	}
+
+	if *out == "-" {
+		_, err := io.WriteString(stdout, body)
+		return err
+	}
+	if err := writeNewFile(*out, body, *force); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Wrote %s. Edit it, then run \"ashctl sandbox create -f %s\".\n", *out, *out)
+	return nil
 }
 
 func setLabel(m map[string]string, k, v string) map[string]string {
@@ -364,7 +481,7 @@ Sends requests that carry your routing key for a cluster workload to a
 service on this machine. Needs a running connection ("ashctl connect").
 
   ashctl local shop/checkout --port 8080:3000
-  curl -H "baggage: routing-key=<you>" http://checkout.shop:8080/
+  curl -H "baggage: routing-key=<key it prints>" http://checkout.shop:8080/
 
 "ashctl disconnect" deletes the sandbox again.
 `
@@ -480,7 +597,7 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 
 	fmt.Fprintf(stdout, "\nRequests for %s/%s with this header now reach this machine:\n  %s\n",
-		from.Namespace, from.Name, sandbox.Header(o.cluster.baggageKey, sb.Name))
+		from.Namespace, from.Name, sandbox.Header(o.cluster.baggageKey, sb.EffectiveRoutingKey()))
 	fmt.Fprintf(stdout, "Check with \"ashctl sandbox get %s\". \"ashctl disconnect\" removes it.\n", sb.Name)
 	return nil
 }
@@ -495,6 +612,9 @@ func upsertLocal(ctx context.Context, c *sandbox.Client, name string, entry v1al
 		sb.Labels = setLabel(sb.Labels, sandbox.LabelSession, session)
 		sb.Labels = setLabel(sb.Labels, sandbox.LabelUser, sandbox.NameFromUser(defaultUser()))
 		sb.Spec.Description = "local development with ashctl"
+		// One stable key per user and sandbox name, so the header stays the
+		// same across connections.
+		sb.Spec.KeySource = "ashctl-local/" + sandbox.NameFromUser(defaultUser()) + "/" + name
 		sb.Spec.TTL = &v1alpha1.TTL{Duration: ttl}
 		sb.Spec.Local = []v1alpha1.Local{entry}
 		return c.Create(ctx, sb)

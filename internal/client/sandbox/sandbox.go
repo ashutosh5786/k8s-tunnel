@@ -185,6 +185,18 @@ func ValidName(name string) error {
 	return nil
 }
 
+// keyRE matches spec.routingKey; it is the same pattern as in the CRD.
+var keyRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{6,30}[a-z0-9]$`)
+
+// ValidKey checks an explicit routing key, so a bad one fails before it
+// reaches the cluster.
+func ValidKey(key string) error {
+	if !keyRE.MatchString(key) {
+		return fmt.Errorf("invalid routing key %q: use 8 to 32 lower-case letters, digits and '-', starting and ending with a letter or digit", key)
+	}
+	return nil
+}
+
 // NameFromUser makes a sandbox name from a user name ("Ash.Smith" -> "ash-smith").
 func NameFromUser(user string) string {
 	var b strings.Builder

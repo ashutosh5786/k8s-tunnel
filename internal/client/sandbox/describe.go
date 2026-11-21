@@ -30,15 +30,18 @@ func Describe(w io.Writer, sb *v1alpha1.Sandbox, baggageKey string, now time.Tim
 		phase = fmt.Sprintf("%s (%d/%d forks ready)", phase, ready, len(st.Forks))
 	}
 
-	key := st.RoutingKey
-	if key == "" {
-		key = strings.ToLower(sb.Name)
-	}
 	fmt.Fprintf(w, "Sandbox %s - %s\n", sb.Name, phase)
 	if sb.Spec.Description != "" {
 		fmt.Fprintf(w, "  %s\n", sb.Spec.Description)
 	}
-	fmt.Fprintf(w, "Header:   %s\n", Header(baggageKey, key))
+	if key := sb.EffectiveRoutingKey(); key != "" {
+		fmt.Fprintf(w, "Header:   %s\n", Header(baggageKey, key))
+	} else {
+		fmt.Fprintln(w, "Header:   (routing key not assigned yet)")
+	}
+	if sb.Spec.KeySource != "" {
+		fmt.Fprintf(w, "Key from: %s\n", sb.Spec.KeySource)
+	}
 	if st.ExpiresAt != nil {
 		fmt.Fprintf(w, "Expires:  %s (in %s)\n", st.ExpiresAt.Local().Format("2006-01-02 15:04"), until(now, st.ExpiresAt.Time))
 	}
@@ -111,7 +114,7 @@ func List(w io.Writer, items []v1alpha1.Sandbox, now time.Time) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tPHASE\tFORKS\tLOCAL\tEXPIRES\tOWNER")
+	fmt.Fprintln(tw, "NAME\tKEY\tPHASE\tFORKS\tLOCAL\tEXPIRES\tOWNER")
 	for _, sb := range items {
 		ready := 0
 		for _, f := range sb.Status.Forks {
@@ -134,7 +137,11 @@ func List(w io.Writer, items []v1alpha1.Sandbox, now time.Time) {
 		if owner == "" {
 			owner = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%d\t%s\t%s\n", sb.Name, phase, ready, len(sb.Spec.Forks), len(sb.Spec.Local), expires, owner)
+		key := sb.EffectiveRoutingKey()
+		if key == "" {
+			key = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%d\t%s\t%s\n", sb.Name, key, phase, ready, len(sb.Spec.Forks), len(sb.Spec.Local), expires, owner)
 	}
 	tw.Flush()
 }

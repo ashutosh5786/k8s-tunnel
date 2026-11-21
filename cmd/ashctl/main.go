@@ -42,7 +42,7 @@ Usage:
   ashctl cleanup                    remove hosts-file entries left by a crash
 
 Sandboxes (needs ashbox in the cluster):
-  ashctl sandbox create|get|list|delete   manage sandboxes ("ashctl sandbox -h")
+  ashctl sandbox create|generate|get|list|delete   manage sandboxes ("ashctl sandbox -h")
   ashctl local NS/NAME --port P[:LOCAL]   send your keyed requests for a workload here
 
 Examples:

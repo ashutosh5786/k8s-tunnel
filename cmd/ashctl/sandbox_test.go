@@ -49,12 +49,14 @@ func runSB(t *testing.T, args ...string) (string, error) {
 
 func TestSandboxCreateFromFlags(t *testing.T) {
 	c, _ := fakeSandboxes(t)
-	out, err := runSB(t, "sandbox", "create", "pr-42", "--fork", "shop/cart=app:cart:pr-42", "--fork", "shop/match", "--ttl", "2h")
+	out, err := runSB(t, "sandbox", "create", "pr-42", "--fork", "shop/cart=app:cart:pr-42", "--fork", "shop/match", "--ttl", "2h", "--key-from", "github.com/acme/shop#42")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "created sandbox pr-42") || !strings.Contains(out, "baggage: routing-key=pr-42") {
-		t.Errorf("output:\n%s", out)
+	// The header shows the derived key at once, not the name.
+	want := "baggage: routing-key=" + v1alpha1.DeriveRoutingKey("github.com/acme/shop#42")
+	if !strings.Contains(out, "created sandbox pr-42") || !strings.Contains(out, want) || strings.Contains(out, "routing-key=pr-42") {
+		t.Errorf("output:\n%s\nwant %q", out, want)
 	}
 	sb, err := c.Get(context.Background(), "pr-42")
 	if err != nil {
@@ -86,6 +88,112 @@ func TestSandboxCreateFromFile(t *testing.T) {
 
 	if _, err := runSB(t, "sandbox", "create", "other-name", "-f", file); err == nil {
 		t.Fatal("name that differs from the file: want error")
+	}
+}
+
+func TestSandboxGenerateTemplateNeverOverwritesByAccident(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sb.yaml")
+	out, err := runSB(t, "sandbox", "generate", "pr-9", "-o", path)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ashctl sandbox create -f "+path) {
+		t.Errorf("output:\n%s", out)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(body), "name: pr-9") {
+		t.Fatalf("file: %v\n%s", err, body)
+	}
+
+	if _, err := runSB(t, "sandbox", "generate", "-o", path); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second generate: %v", err)
+	}
+	if _, err := runSB(t, "sandbox", "generate", "-o", path, "--force"); err != nil {
+		t.Fatalf("--force: %v", err)
+	}
+	if body, _ := os.ReadFile(path); !strings.Contains(string(body), "name: my-sandbox") {
+		t.Errorf("--force did not replace the file:\n%s", body)
+	}
+}
+
+func TestSandboxGenerateFromFlagsMatchesCreate(t *testing.T) {
+	c, _ := fakeSandboxes(t)
+	out, err := runSB(t, "sandbox", "generate", "pr-42", "--fork", "shop/cart=app:cart:pr-42", "--ttl", "2h", "-o", "-")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if strings.Contains(out, "#") || !strings.Contains(out, "image: cart:pr-42") || !strings.Contains(out, "duration: 2h") {
+		t.Fatalf("manifest:\n%s", out)
+	}
+
+	// The printed manifest creates the same sandbox.
+	file := filepath.Join(t.TempDir(), "sb.yaml")
+	if err := os.WriteFile(file, []byte(out), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runSB(t, "sandbox", "create", "-f", file); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	sb, err := c.Get(context.Background(), "pr-42")
+	if err != nil || len(sb.Spec.Forks) != 1 || sb.Spec.TTL.Duration != "2h" {
+		t.Fatalf("sandbox = %+v, %v", sb, err)
+	}
+}
+
+func TestSandboxCreateKeyFlags(t *testing.T) {
+	c, _ := fakeSandboxes(t)
+	if out, err := runSB(t, "sandbox", "create", "a1", "--fork", "shop/cart", "--key", "cart-pricing"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if sb, _ := c.Get(context.Background(), "a1"); sb.Spec.RoutingKey != "cart-pricing" {
+		t.Fatalf("routingKey = %q", sb.Spec.RoutingKey)
+	}
+
+	file := filepath.Join(t.TempDir(), "sb.yaml")
+	body := "metadata: {name: f1}\nspec:\n  keySource: github.com/acme/shop#1\n  forks: [{forkOf: {namespace: shop, name: cart}}]\n"
+	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"sandbox", "create", "b1", "--fork", "shop/cart", "--key", "short"},                       // too short
+		{"sandbox", "create", "b2", "--fork", "shop/cart", "--key", "Has_Upper1"},                  // bad characters
+		{"sandbox", "create", "b3", "--fork", "shop/cart", "--key", "abcdefgh", "--key-from", "x"}, // both
+		{"sandbox", "create", "-f", file, "--key-from", "github.com/acme/shop#2"},                  // contradicts file
+		{"sandbox", "create", "-f", file, "--key", "abcdefgh"},                                     // contradicts file
+	} {
+		if _, err := runSB(t, args...); err == nil {
+			t.Errorf("%v: want error", args)
+		}
+	}
+	// The same value as the file is fine.
+	if out, err := runSB(t, "sandbox", "create", "-f", file, "--key-from", "github.com/acme/shop#1"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+func TestSandboxGenerateWithKey(t *testing.T) {
+	out, err := runSB(t, "sandbox", "generate", "pr-42", "--fork", "shop/cart", "--key-from", "github.com/acme/shop#42", "-o", "-")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "keySource: github.com/acme/shop#42") {
+		t.Fatalf("manifest:\n%s", out)
+	}
+}
+
+func TestSandboxGenerateErrors(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"sandbox", "generate", "PR_42"},
+		{"sandbox", "generate", "a", "b"},
+		{"sandbox", "generate", "--ttl", "2h"},
+		{"sandbox", "generate", "--fork", "shop/cart", "-o", "-"},
+		{"sandbox", "generate", "pr-1", "--fork", "cart", "-o", "-"},
+	} {
+		args = append(args, "-o", filepath.Join(dir, "x.yaml"))
+		if _, err := runSB(t, args...); err == nil {
+			t.Errorf("%v: want error", args)
+		}
 	}
 }
 
